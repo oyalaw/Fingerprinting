@@ -19,6 +19,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "experiment": {
         "experiment_id": "auto",
         "output_dir": "experiments/results",
+        "existing_output_policy": "error",
     },
     "node": {
         "role": "server",
@@ -170,6 +171,18 @@ def save_config(config: Dict[str, Any], path: str | Path) -> None:
 
 
 def validate_config(config: Dict[str, Any]) -> None:
+    policy = str(
+        config.get("experiment", {}).get(
+            "existing_output_policy",
+            "error",
+        )
+    ).strip().lower()
+    if policy not in {"error", "archive"}:
+        raise ConfigError(
+            "experiment.existing_output_policy must be "
+            "error or archive"
+        )
+
     role = config["node"]["role"]
     if role not in {"client", "server"}:
         raise ConfigError("node.role must be client or server")

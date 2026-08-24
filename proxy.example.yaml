@@ -1,6 +1,8 @@
 experiment:
   experiment_id: EXP_PROXY_001
   output_dir: proxy_results
+  existing_output_policy: error
+
 proxy:
   listen_host: 0.0.0.0
   listen_port: 5000
@@ -8,12 +10,52 @@ proxy:
   upstream_port: 5000
   connect_timeout_sec: 30
   buffer_size: 65536
+  # recv() chunks are proxy diagnostics, not packet boundaries. Leave false
+  # for normal experiments to avoid a large forwarding CSV.
+  forwarding_log_enabled: false
+
 capture:
   enabled: true
   interface: wlan0
-  client_ip: 10.42.0.145
+
+  # REQUIRED by default. The BPF filter captures only packets involving
+  # these clients, preventing a second copy of the same byte stream from
+  # being captured on the proxy -> upstream-server leg.
+  client_ips:
+    - 10.42.0.47
+    - 10.42.0.210
+
+  # Optional but recommended for federated learning. Map each network client
+  # to its exact federated client_id so per-client proxy features can be joined
+  # to the correct client-side ground truth. These aliases are metadata only
+  # and are never model predictors.
+  client_aliases:
+    10.42.0.47: client_1
+    10.42.0.210: client_2
+
+  strict_client_isolation: true
+  per_client_artifacts: true
+
+  # Store only the first 256 bytes of each frame. The PCAP still records the
+  # original frame length used by packet-size fingerprinting. Set 0 for full
+  # encrypted frame payloads.
+  snaplen_bytes: 256
+
+  # v0.8.4 packet-size fidelity protection. Enabled by default.
+  # The proxy disables only enabled mutable capture-affecting offloads,
+  # verifies the capture-time state, and restores exactly what it changed.
+  offload_management:
+    enabled: true
+    required: true
+    allow_sudo_noninteractive: true
+    restore_on_exit: true
+    features: [gro, gso, tso, lro]
+
   proxy_client_facing_ip: null
   extract_after: true
   burst_gap_sec: 0.05
   idle_threshold_sec: 0.5
-  window_seconds: null
+
+  # Writes one overall row plus 5-second feature windows for each client.
+  # Set to null to generate overall-only features.
+  window_seconds: 5.0

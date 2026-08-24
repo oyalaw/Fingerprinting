@@ -8,7 +8,13 @@ from typing import Any, Dict, List
 
 from . import registry
 from .capture import run_capture
-from .config import DEFAULT_CONFIG, ConfigError, load_config, save_config
+from .config import (
+    DEFAULT_CONFIG,
+    ConfigError,
+    generate_experiment_id,
+    load_config,
+    save_config,
+)
 from .dataset_catalog import (
     DATASETS,
     SIZE_ORDER,
@@ -17,6 +23,12 @@ from .dataset_catalog import (
     get_dataset_spec,
 )
 from .dataset_manager import DatasetError, prepare_dataset
+from .experiment_output import (
+    ExistingExperimentError,
+    archive_existing_outputs,
+    find_existing_outputs,
+)
+from .offload import CaptureOffloadError
 from .proxy import (
     BlindTCPProxy,
     DEFAULT_PROXY_CONFIG,
@@ -75,6 +87,69 @@ def ask_yes_no(prompt: str, default: bool = True) -> bool:
             return False
         print("Enter y or n.")
 
+
+
+def resolve_existing_outputs_interactive(
+    config: Dict[str, Any],
+    role: str,
+) -> Dict[str, Any]:
+    """
+    Prevent accidental mixing of repeated runs in the no-argument workflow.
+
+    If output files already exist for the same experiment_id and role, the
+    user must choose a new ID, archive the old role-specific files, or cancel.
+    """
+    while True:
+        existing = find_existing_outputs(
+            config,
+            role=role,
+        )
+        if not existing:
+            return config
+
+        experiment_id = str(
+            config["experiment"]["experiment_id"]
+        )
+        print()
+        print(
+            f"Experiment ID {experiment_id!r} already has "
+            f"{role} output files:"
+        )
+        for path in existing:
+            print(f"  - {path}")
+
+        action = choose(
+            "Existing experiment output detected",
+            [
+                "use_new_experiment_id",
+                "archive_existing_run",
+                "cancel",
+            ],
+        )
+
+        if action == "use_new_experiment_id":
+            new_id = ask_text(
+                "New experiment ID; use auto for a timestamped ID",
+                "auto",
+            ).strip()
+            if not new_id or new_id == "auto":
+                new_id = generate_experiment_id()
+            config["experiment"]["experiment_id"] = new_id
+            continue
+
+        if action == "archive_existing_run":
+            archive_dir = archive_existing_outputs(
+                config,
+                role=role,
+                paths=existing,
+            )
+            print(
+                f"Archived {len(existing)} existing file(s) "
+                f"to {archive_dir}"
+            )
+            return config
+
+        raise KeyboardInterrupt
 
 def interactive_configure(
     forced_role: str | None = None,
@@ -321,21 +396,91 @@ def interactive_proxy_configure() -> Dict[str, Any]:
             "Client-facing capture interface",
             "wlan0",
         )
-
-        client_ip = ask_text(
-            "Client IP for capture isolation; leave blank if unknown",
-            "",
+        config["capture"]["snaplen_bytes"] = ask_int(
+            "PCAP snapshot length in bytes; 0 stores full frames",
+            256,
         )
-        config["capture"]["client_ip"] = client_ip or None
 
-        if not client_ip:
-            proxy_ip = ask_text(
-                "Proxy IP visible to the client for direction inference",
+        manage_offloads = ask_yes_no(
+            "Automatically disable GRO/GSO/TSO/LRO during capture",
+            True,
+        )
+        config["capture"]["offload_management"][
+            "enabled"
+        ] = manage_offloads
+        if manage_offloads:
+            config["capture"]["offload_management"][
+                "required"
+            ] = ask_yes_no(
+                "Abort capture if offloads cannot be verified disabled",
+                True,
+            )
+            config["capture"]["offload_management"][
+                "allow_sudo_noninteractive"
+            ] = ask_yes_no(
+                "Allow non-interactive sudo fallback for ethtool only",
+                True,
+            )
+            config["capture"]["offload_management"][
+                "restore_on_exit"
+            ] = True
+
+        while True:
+            client_text = ask_text(
+                "Participating client IPs for capture isolation "
+                "(comma-separated)",
                 "",
             )
-            config["capture"]["proxy_client_facing_ip"] = (
-                proxy_ip or None
+            client_ips = [
+                value.strip()
+                for value in client_text.split(",")
+                if value.strip()
+            ]
+            if client_ips:
+                break
+            print(
+                "At least one client IP is required. This prevents "
+                "capturing the proxy-to-upstream duplicate leg."
             )
+
+        config["capture"]["client_ip"] = None
+        config["capture"]["client_ips"] = list(
+            dict.fromkeys(client_ips)
+        )
+
+        alias_text = ask_text(
+            "Optional client aliases as IP=client_id pairs, comma-separated",
+            "",
+        )
+        aliases: Dict[str, str] = {}
+        if alias_text:
+            for piece in alias_text.split(","):
+                piece = piece.strip()
+                if not piece:
+                    continue
+                if "=" not in piece:
+                    raise ValueError(
+                        "Client aliases must use IP=client_id syntax"
+                    )
+                ip, alias = piece.split("=", 1)
+                ip = ip.strip()
+                alias = alias.strip()
+                if ip not in config["capture"]["client_ips"]:
+                    raise ValueError(
+                        f"Alias IP {ip!r} is not in the configured "
+                        "client IP list"
+                    )
+                if not alias:
+                    raise ValueError(
+                        f"Empty client alias for {ip!r}"
+                    )
+                aliases[ip] = alias
+        config["capture"]["client_aliases"] = aliases
+
+        config["capture"]["per_client_artifacts"] = ask_yes_no(
+            "Generate separate classifier-safe sequence/features per client",
+            True,
+        )
 
         config["capture"]["extract_after"] = ask_yes_no(
             "Extract packet sequence and handcrafted features on stop",
@@ -343,13 +488,12 @@ def interactive_proxy_configure() -> Dict[str, Any]:
         )
 
         window_text = ask_text(
-            "Optional feature window in seconds; blank for overall only",
-            "",
+            "Feature window in seconds; enter 0 for overall only",
+            "5.0",
         )
+        window_value = float(window_text)
         config["capture"]["window_seconds"] = (
-            float(window_text)
-            if window_text
-            else None
+            window_value if window_value > 0 else None
         )
 
     return config
@@ -365,13 +509,18 @@ def run_interactive_proxy() -> None:
         "auto",
     }:
         # Reuse the loader's automatic ID generation by saving once,
-        # then loading and saving the resolved label-blind config.
+        # then loading the resolved label-blind config.
         save_proxy_config(config, output)
         config = load_proxy_config(output)
-        save_proxy_config(config, output)
     else:
         save_proxy_config(config, output)
         config = load_proxy_config(output)
+
+    config = resolve_existing_outputs_interactive(
+        config,
+        role="proxy",
+    )
+    save_proxy_config(config, output)
 
     print(f"Proxy configuration saved to {output}")
     BlindTCPProxy(config).serve_forever()
@@ -461,6 +610,16 @@ def _print_artifacts(result: Dict[str, Any]) -> None:
         if key in result:
             print(f"  {key}: {result[key]}")
 
+    per_client = result.get("per_client_artifacts", {}) or {}
+    if per_client:
+        print("  per_client_artifacts:")
+        for alias, artifacts in per_client.items():
+            print(
+                f"    {alias}: packets={artifacts.get('packet_count')} "
+                f"features={artifacts.get('features_csv')} "
+                f"sequence={artifacts.get('fingerprint_sequence_csv')}"
+            )
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -520,9 +679,51 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--output-dir", default=None)
     capture.add_argument("--server-ip", default=None)
     capture.add_argument("--client-ip", default=None)
+    capture.add_argument(
+        "--client-ips",
+        default=None,
+        help=(
+            "Comma-separated participating client IPs. Prefer this for "
+            "inline-proxy captures so the upstream duplicate leg is "
+            "excluded."
+        ),
+    )
     capture.add_argument("--burst-gap-sec", type=float, default=0.05)
     capture.add_argument("--idle-threshold-sec", type=float, default=0.5)
     capture.add_argument("--window-seconds", type=float, default=None)
+    capture.add_argument(
+        "--snaplen-bytes",
+        type=int,
+        default=256,
+        help=(
+            "Capture only the first N bytes of each frame while preserving "
+            "the original frame length. Use 0 for full frames."
+        ),
+    )
+    capture.add_argument(
+        "--no-manage-offloads",
+        action="store_true",
+        help=(
+            "Do not automatically disable GRO/GSO/TSO/LRO. "
+            "Not recommended for packet-size fingerprinting."
+        ),
+    )
+    capture.add_argument(
+        "--offload-warning-only",
+        action="store_true",
+        help=(
+            "Attempt offload management but do not abort if the "
+            "disabled state cannot be verified."
+        ),
+    )
+    capture.add_argument(
+        "--no-sudo-offload-fallback",
+        action="store_true",
+        help=(
+            "Do not retry ethtool -K through sudo -n when direct "
+            "CAP_NET_ADMIN permission is unavailable."
+        ),
+    )
     capture.add_argument(
         "--no-extract",
         action="store_true",
@@ -541,6 +742,14 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--output-dir", default=None)
     extract.add_argument("--server-ip", default=None)
     extract.add_argument("--client-ip", default=None)
+    extract.add_argument(
+        "--client-ips",
+        default=None,
+        help=(
+            "Comma-separated client IPs used to post-filter a broad PCAP "
+            "to client-facing traffic only."
+        ),
+    )
     extract.add_argument("--burst-gap-sec", type=float, default=0.05)
     extract.add_argument("--idle-threshold-sec", type=float, default=0.5)
     extract.add_argument("--window-seconds", type=float, default=None)
@@ -605,6 +814,11 @@ def main() -> None:
         )
         save_config(config, output)
         config = load_config(output)
+        config = resolve_existing_outputs_interactive(
+            config,
+            role=role,
+        )
+        save_config(config, output)
         print(f"Configuration saved to {output}")
         run(config)
         return
@@ -631,11 +845,22 @@ def main() -> None:
 
         if args.command == "capture":
             output = args.output or f"captures/{args.experiment_id}.pcapng"
+            client_ips = (
+                [
+                    value.strip()
+                    for value in args.client_ips.split(",")
+                    if value.strip()
+                ]
+                if args.client_ips
+                else []
+            )
             result = run_capture(
                 interface=args.interface,
                 output=output,
                 host=args.host,
+                hosts=client_ips,
                 port=args.port,
+                snaplen_bytes=args.snaplen_bytes,
                 experiment_id=args.experiment_id,
                 extract_after=not args.no_extract,
                 output_dir=args.output_dir,
@@ -644,17 +869,34 @@ def main() -> None:
                 burst_gap_sec=args.burst_gap_sec,
                 idle_threshold_sec=args.idle_threshold_sec,
                 window_seconds=args.window_seconds,
+                manage_offloads=not args.no_manage_offloads,
+                require_offloads_disabled=(
+                    not args.offload_warning_only
+                ),
+                allow_sudo_noninteractive=(
+                    not args.no_sudo_offload_fallback
+                ),
             )
             _print_artifacts(result)
             return
 
         if args.command == "extract":
+            client_ips = (
+                [
+                    value.strip()
+                    for value in args.client_ips.split(",")
+                    if value.strip()
+                ]
+                if args.client_ips
+                else []
+            )
             result = extract_capture_artifacts(
                 pcap_path=args.pcap,
                 experiment_id=args.experiment_id,
                 output_dir=args.output_dir,
                 server_ip=args.server_ip,
                 client_ip=args.client_ip,
+                client_ips=client_ips,
                 burst_gap_sec=args.burst_gap_sec,
                 idle_threshold_sec=args.idle_threshold_sec,
                 window_seconds=args.window_seconds,
@@ -686,8 +928,10 @@ def main() -> None:
                 return
 
     except (
+        CaptureOffloadError,
         ConfigError,
         DatasetError,
+        ExistingExperimentError,
         FeatureExtractionError,
         ProxyError,
         KeyError,

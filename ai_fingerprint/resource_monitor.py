@@ -16,6 +16,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import psutil
 
+from .metadata import output_role_token
+
 
 RESOURCE_SCHEMA_VERSION = "1.0"
 
@@ -439,13 +441,14 @@ class ResourceMonitor:
         output_dir = Path(config["experiment"]["output_dir"])
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        role_token = output_role_token(config)
         self.csv_path = (
             output_dir
-            / f"{self.experiment_id}_{self.role}_resource.csv"
+            / f"{self.experiment_id}_{role_token}_resource.csv"
         )
         self.summary_path = (
             output_dir
-            / f"{self.experiment_id}_{self.role}_resource_summary.json"
+            / f"{self.experiment_id}_{role_token}_resource_summary.json"
         )
 
         self.process = psutil.Process(os.getpid())

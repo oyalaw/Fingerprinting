@@ -1,5 +1,5 @@
 AI Fingerprinting Data Isolation Policy
-Version 1.0
+Version 1.1
 
 1. Predictor input X
 --------------------
@@ -10,8 +10,9 @@ Allowed sources:
   *_fingerprint_sequence.csv
 
 The handcrafted X builder accepts numeric network-derived fields from the
-proxy feature CSV. experiment_id and window identifiers are retained only as
-metadata for joining/grouped splitting and are not predictor columns.
+proxy feature CSV. experiment_id, client_capture_id, row_type, and window
+identifiers are retained only as metadata for joining/grouped splitting and are
+not predictor columns.
 
 2. Ground truth Y
 -----------------
@@ -31,7 +32,39 @@ Required labels:
 The client device is used as the device target. The server device is not used
 as a target for a client-facing proxy trace.
 
-3. Resource telemetry
+For federated multi-client runs, client_capture_id in the per-client proxy
+feature file must match the exact federated client_id in the client ground-truth
+log. Both are grouping/join metadata and are prohibited from the predictor
+matrix.
+
+3. Client-facing capture isolation
+----------------------------------
+An inline proxy creates two TCP legs:
+
+  client <-> proxy
+  proxy <-> real server
+
+Capturing both legs duplicates the application byte stream and can invert
+semantic direction on the upstream leg. The proxy therefore requires
+participating client IPs by default and uses them in the BPF filter. The
+upstream proxy-server leg is excluded.
+
+Client IP addresses are used only during capture isolation/grouping and are
+removed from classifier-ready packet sequences.
+
+4. Multi-client traces
+----------------------
+For a multi-client experiment, the combined raw trace is retained for audit,
+but model input should use the automatically generated per-client files:
+
+  <experiment_id>__<client_alias>_fingerprint_sequence.csv
+  <experiment_id>__<client_alias>_features.csv
+
+The combined multi-client fingerprint sequence is marked classifier-ineligible
+in the manifest. prepare_fingerprinting_dataset.py prefers per-client feature
+files when they exist.
+
+5. Resource telemetry
 ---------------------
 CPU, GPU, memory, power, energy, process utilization, and other client/server
 resource telemetry are prohibited from X. The dataset builder rejects resource
@@ -39,7 +72,7 @@ files and rejects resource-like columns if they appear in a proxy feature CSV.
 
 Resource telemetry remains valid for separate performance/system analysis.
 
-4. Packet sequence identity sanitization
+6. Packet sequence identity sanitization
 ----------------------------------------
 The raw packet sequence is retained for audit:
 
@@ -48,11 +81,7 @@ The raw packet sequence is retained for audit:
 It is NOT classifier eligible because it contains endpoint identity and an
 absolute timestamp.
 
-The proxy also emits:
-
-  *_fingerprint_sequence.csv
-
-The classifier-safe sequence removes:
+The proxy also emits classifier-safe sequences. They remove:
 
   timestamp_epoch
   src_ip
@@ -60,11 +89,38 @@ The classifier-safe sequence removes:
   src_port
   dst_port
 
-This reduces shortcut learning based on network identity and supports
-cross-network generalization.
+They retain packet timing relative to the trace, frame length, direction,
+transport protocol, normalized TCP flags, retransmission signal, and observable
+TLS record metadata when present.
 
-5. Physical X/Y separation
---------------------------
+7. TCP flag normalization
+-------------------------
+SYN, ACK, FIN, and RST are derived from the tcp.flags bitmask. This avoids
+capture-parser version differences where individual tshark flag subfields may
+be blank or zero despite the bitmask containing the flag.
+
+8. Capture quality/offload fidelity
+--------------------------------------
+For packet-size fingerprinting, the proxy manages capture-affecting GRO/GSO/
+TSO/LRO on the capture interface by default. It records the original state,
+disables enabled mutable features, verifies the capture-time state, stops the
+capture before restoration, restores exactly the settings it changed, and
+verifies the final state. Required capture fails closed if a safe state cannot
+be verified.
+
+The Python application itself is not run as root. Optional non-interactive sudo
+fallback is restricted to ethtool -K operations. Interface/offload provenance,
+MTU, and oversized-frame diagnostics remain metadata only and are never
+predictor labels or automatically injected into X.
+
+9. Windowing
+------------
+The proxy workflow writes one overall feature row plus 5-second windows by
+default. The window length may be changed or disabled. All windows belonging to
+the same experiment must remain in the same train/validation/test group.
+
+10. Physical X/Y separation
+---------------------------
 prepare_fingerprinting_dataset.py produces:
 
   fingerprinting_X_proxy.csv
@@ -74,23 +130,33 @@ prepare_fingerprinting_dataset.py produces:
 X and Y are physically separate. The schema explicitly lists predictor,
 metadata, label, and prohibited fields.
 
-6. Strict downstream loading
-----------------------------
+11. Strict downstream loading
+-----------------------------
 ai_fingerprint.fingerprinting_dataset.load_xy() returns only schema-declared
 proxy predictor columns as X and one approved ground-truth target as y.
-experiment_id, window identifiers, labels, and resource metrics cannot enter X
-through this loader.
+experiment_id, client_capture_id, window identifiers, labels, and resource
+metrics cannot enter X through this loader.
 
-7. Local execution
-------------------
+12. Local execution
+-------------------
 Local inference/training does not create workload exchange observable by a
 network-side proxy. The proxy dataset builder therefore rejects deployment=local
 as a network fingerprinting sample. Local experiments remain useful for
-resource/performance baselines, or for separately defined download/telemetry
-studies.
+resource/performance baselines or separately defined download/telemetry studies.
 
-8. Splitting
-------------
+13. Splitting
+-------------
 Do not randomly split packets/windows from the same experiment across train and
 test. Split by experiment/run/session/device grouping as appropriate to avoid
 leakage.
+
+14. Repair of earlier broad captures
+------------------------------------
+When the raw *_packet_sequence.csv exists, an earlier broad proxy capture can
+be repaired without the PCAP using:
+
+  python3 repair_proxy_sequence.py
+
+The repair process retains only packets involving configured client IPs,
+recomputes direction, reconstructs TCP flags from tcp_flags_hex, and produces
+clean per-client/windowed classifier artifacts.

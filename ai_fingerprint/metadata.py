@@ -10,10 +10,30 @@ def utc_now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
+def output_role_token(config: Dict[str, Any]) -> str:
+    """Return a filesystem-safe role/client token for output filenames."""
+    role = str(config["node"]["role"])
+    if (
+        role == "client"
+        and config.get("execution", {}).get("deployment") == "federated"
+    ):
+        client_id = str(
+            config.get("federated", {}).get("client_id", "client")
+        ).strip()
+        safe = "".join(
+            ch if ch.isalnum() or ch in {"-", "_"} else "_"
+            for ch in client_id
+        ).strip("_") or "client"
+        if not safe.lower().startswith("client"):
+            safe = f"client_{safe}"
+        return safe
+    return role
+
+
 def ground_truth_record(config: Dict[str, Any]) -> Dict[str, Any]:
     ai = config["ai"]
     data = config["data"]
-    return {
+    record = {
         "experiment_id": config["experiment"]["experiment_id"],
         "role": config["node"]["role"],
         "framework": ai["framework"],
@@ -37,14 +57,31 @@ def ground_truth_record(config: Dict[str, Any]) -> Dict[str, Any]:
         "input_size": ai["input_size"],
     }
 
+    if (
+        config["node"]["role"] == "client"
+        and config["execution"]["deployment"] == "federated"
+    ):
+        # Ground-truth grouping metadata only. The proxy does not receive this
+        # value, and fingerprinting_dataset.py forbids client_id as a model
+        # predictor. It allows per-client proxy traces to join to the correct
+        # client device label in multi-client FL experiments.
+        record["client_id"] = str(
+            config.get("federated", {}).get("client_id", "")
+        )
+
+    return record
+
 
 class EventLogger:
     def __init__(self, config: Dict[str, Any]) -> None:
         output_dir = Path(config["experiment"]["output_dir"])
         output_dir.mkdir(parents=True, exist_ok=True)
         experiment_id = config["experiment"]["experiment_id"]
-        role = config["node"]["role"]
-        self.path = output_dir / f"{experiment_id}_{role}_ground_truth.jsonl"
+        role_token = output_role_token(config)
+        self.path = (
+            output_dir
+            / f"{experiment_id}_{role_token}_ground_truth.jsonl"
+        )
         self.base = ground_truth_record(config)
 
     def write(self, event: str, **fields: Any) -> None:

@@ -1,5 +1,5 @@
 AI Fingerprinting Label-Blind Proxy
-Schema version 1.0
+Schema version 1.1
 
 Purpose
 -------
@@ -16,6 +16,7 @@ Configuration
 experiment:
   experiment_id: EXP_PROXY_001
   output_dir: proxy_results
+  existing_output_policy: error
 
 proxy:
   listen_host: 0.0.0.0
@@ -24,63 +25,145 @@ proxy:
   upstream_port: 5000
   connect_timeout_sec: 30
   buffer_size: 65536
+  forwarding_log_enabled: false
 
 capture:
   enabled: true
   interface: wlan0
-  client_ip: 10.42.0.145
-  proxy_client_facing_ip: null
+  client_ips:
+    - 10.42.0.47
+    - 10.42.0.210
+  client_aliases:
+    10.42.0.47: client_1
+    10.42.0.210: client_2
+  strict_client_isolation: true
+  per_client_artifacts: true
+  snaplen_bytes: 256
+  offload_management:
+    enabled: true
+    required: true
+    allow_sudo_noninteractive: true
+    restore_on_exit: true
+    features: [gro, gso, tso, lro]
   extract_after: true
   burst_gap_sec: 0.05
   idle_threshold_sec: 0.5
-  window_seconds: null
+  window_seconds: 5.0
 
 Label blindness
 ---------------
-The proxy configuration intentionally excludes:
+The proxy configuration intentionally excludes AI/workload labels such as:
+framework, runtime, task, deployment, family, architecture, variant,
+application, dataset, and device.
 
-framework
-runtime
-task
-deployment
-family
-architecture
-variant
-application
-dataset
-device
-
-Use the same experiment_id on the client/server ground-truth logs and proxy
-capture so they can be joined after collection.
+Client IPs and optional aliases are network/session grouping metadata. They are
+used to isolate a client-facing trace and are removed from classifier-ready
+packet sequences. If aliases are supplied for federated experiments, use the
+exact federated client_id values so the dataset builder can join each proxy
+trace to the correct client ground truth.
 
 Capture isolation
 -----------------
-For an inline application proxy, there are two TCP legs:
+An inline application proxy creates two TCP legs:
 
 client <-> proxy
 proxy <-> real server
 
-For fingerprinting, capture the client-facing leg whenever possible. Set
-capture.interface to the client-facing interface and set capture.client_ip.
-The capture filter then becomes:
+Capturing both legs duplicates the same application byte stream and can invert
+direction semantics on the upstream leg. Therefore strict client isolation is
+enabled by default.
 
-host <client_ip> and port <proxy_listen_port>
+For two clients and proxy listen port 8080, the capture BPF is:
 
-This prevents the upstream proxy-to-server connection from being counted as a
-second copy of the experiment traffic.
+(host 10.42.0.47 or host 10.42.0.210) and port 8080
+
+The upstream server IP is not in that filter, so proxy-to-server packets are
+not captured as a second copy.
+
+Multi-client artifacts
+----------------------
+The proxy retains one combined raw trace for audit and automatically generates
+separate classifier-safe artifacts for each configured client:
+
+<experiment_id>__<client_alias>_fingerprint_sequence.csv
+<experiment_id>__<client_alias>_features.csv
+
+For multi-client experiments, use these per-client files for classifier input.
+The combined multi-client safe sequence is retained for audit/aggregate traffic
+analysis and is marked classifier-ineligible in the manifest.
+
+Windowing
+---------
+By default, feature extraction writes an overall row plus 5-second windows.
+Set capture.window_seconds to another positive value as needed, or null for an
+overall-only feature file. All windows from the same experiment must remain in
+the same train/validation/test group.
+
+TCP flags
+---------
+SYN, ACK, FIN, and RST are derived from the authoritative tcp.flags bitmask.
+This avoids tshark-version differences where tcp.flags.syn/tcp.flags.ack fields
+may be blank or zero despite tcp.flags containing the bits.
+
+
+
+Forwarding diagnostics size
+---------------------------
+The proxy summary always records aggregate bytes and connection/chunk counts.
+`proxy.forwarding_log_enabled` defaults to false because recv() chunk boundaries
+are not network packet boundaries and the per-chunk CSV can become very large.
+Set it to true only for proxy implementation diagnostics.
+
+PCAP size control
+-----------------
+The proxy defaults to capture.snaplen_bytes=256. dumpcap/tshark stores only the
+first 256 bytes of each frame, while the PCAP record retains the original frame
+length used by frame.len. This substantially reduces PCAP size because the
+fingerprinting pipeline does not require encrypted payload contents. Set the
+value to 0 to store full frames. A small snap length can reduce the completeness
+of deep payload dissectors such as TLS reassembly, so increase it if full TLS
+record reconstruction is a required experimental feature.
+
+Packet offload fidelity protection
+----------------------------------
+By default the proxy actively manages capture-affecting GRO/GSO/TSO/LRO on the
+configured capture interface. Before capture it reads the original ethtool
+state, disables only features that are enabled and mutable, reads the state
+again, and aborts a required capture if the disabled state cannot be verified.
+After the PCAP process stops, it restores exactly the features changed by the
+experiment and verifies restoration.
+
+The full Python application is never elevated. When direct ethtool -K access
+is denied, the manager may retry only the exact ethtool command using sudo -n.
+Use OFFLOAD_PRIVILEGES.md and scripts/install_offload_sudoers.sh to install a
+narrow per-user/per-interface rule. The manifest and proxy summary record the
+before/capture/restore states; these diagnostics are not classifier predictors.
 
 Outputs
 -------
 <experiment_id>.pcapng
 <experiment_id>_packet_sequence.csv
+<experiment_id>_fingerprint_sequence.csv
 <experiment_id>_features.csv
 <experiment_id>_manifest.json
+<experiment_id>__<client_alias>_fingerprint_sequence.csv
+<experiment_id>__<client_alias>_features.csv
 <experiment_id>_proxy_forwarding.csv
 <experiment_id>_proxy_summary.json
 
 The forwarding CSV is diagnostic. Its recv() chunk boundaries are NOT packet
-boundaries and should not replace the PCAP-derived packet sequence used by the
-fingerprinting classifier.
+boundaries and must not replace the PCAP-derived packet sequence.
+
+Repairing an earlier broad capture
+----------------------------------
+If an earlier run captured both proxy legs and the raw packet-sequence CSV is
+available, the PCAP is not required for repair:
+
+python3 repair_proxy_sequence.py
+
+The repair utility asks for the participating client IPs, removes packets that
+do not involve those clients, recomputes direction, reconstructs TCP flag
+bits, and generates clean per-client/windowed fingerprint artifacts.
 
 TLS
 ---

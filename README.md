@@ -1,6 +1,6 @@
 # AI Fingerprinting Experiment Codebase
 
-Version 0.8 enforces attacker-data isolation: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
+Version 0.8.4 enforces attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
 
 The same repository supports client execution, server execution, proxy capture, real dataset loading, and ground truth logging.
 
@@ -11,6 +11,190 @@ The attacker facing fingerprinting pipeline uses only network observable informa
 
 
 
+
+
+
+
+
+## Capture-interface offload control (v0.8.4)
+
+Packet size is a fingerprinting observable, so capture-side GRO/GSO/TSO/LRO
+must not silently coalesce or segment packets differently from the wire view.
+
+The proxy now performs this lifecycle automatically:
+
+```text
+read original ethtool state
+        ↓
+disable enabled mutable GRO/GSO/TSO/LRO
+        ↓
+verify disabled state
+        ↓
+start PCAP capture
+        ↓
+stop PCAP capture
+        ↓
+restore only settings changed by this run
+        ↓
+verify restoration
+```
+
+The default configuration is:
+
+```yaml
+capture:
+  offload_management:
+    enabled: true
+    required: true
+    allow_sudo_noninteractive: true
+    restore_on_exit: true
+    features: [gro, gso, tso, lro]
+```
+
+When `required: true`, the proxy fails closed rather than collecting packet-size
+fingerprints when `ethtool` is missing, an enabled feature is driver-fixed, a
+permission error cannot be resolved, or the disabled state cannot be verified.
+
+Do not run the whole application with `sudo`. The project includes a narrow
+sudoers installer that permits only `ethtool -K` for GRO/GSO/TSO/LRO on one
+specified interface:
+
+```bash
+sudo apt install ethtool
+sudo bash scripts/install_offload_sudoers.sh <capture-interface>
+```
+
+See `OFFLOAD_PRIVILEGES.md` for the privilege model.
+
+Each proxy run writes:
+
+```text
+<experiment_id>_proxy_offload_state.json
+```
+
+and also embeds the before/capture/restore report in proxy/manifest metadata.
+These values are provenance and quality-control metadata, never classifier
+predictors.
+
+## Client-facing capture integrity (v0.8.3)
+
+The inline proxy now requires participating client IPs when capture is enabled.
+The capture BPF is built from those client IPs plus the proxy listen port, so a
+proxy-to-upstream copy of the same byte stream is not captured a second time.
+For example:
+
+```text
+(host 10.42.0.47 or host 10.42.0.210) and port 8080
+```
+
+For federated experiments, optional `client_aliases` should map each client IP
+to its exact federated `client_id`:
+
+```yaml
+capture:
+  client_ips:
+    - 10.42.0.47
+    - 10.42.0.210
+  client_aliases:
+    10.42.0.47: client_1
+    10.42.0.210: client_2
+```
+
+The proxy retains a combined raw trace for audit and automatically writes
+separate classifier-safe sequence and feature files per client. In a
+multi-client run, the mixed combined trace is marked classifier-ineligible;
+use the per-client files for model training/evaluation.
+
+Feature extraction now includes an overall row plus 5-second windows by
+default. Change `capture.window_seconds` to another positive duration or set it
+to `null` for overall-only features.
+
+PCAP capture now defaults to `capture.snaplen_bytes: 256`. Only the first 256
+bytes of each frame are stored, while the PCAP preserves the original frame
+length used by packet-size features. This can reduce multi-gigabyte captures
+substantially. Set the value to `0` when full encrypted frame payloads are
+required; a short snap length can reduce deep TLS reassembly completeness.
+
+The proxy's per-`recv()` forwarding CSV is disabled by default with
+`proxy.forwarding_log_enabled: false`. Aggregate forwarded bytes and connection
+statistics remain in the proxy summary. Enable the CSV only for proxy debugging;
+its chunk boundaries are not packet boundaries and it is not fingerprinting
+input.
+
+TCP SYN/ACK/FIN/RST fields are reconstructed from the `tcp.flags` bitmask,
+which avoids tshark-version cases where individual flag subfields are blank or
+zero. The manifest records interface MTU and the v0.8.4 offload-management lifecycle.
+Oversized captured frames remain a capture-quality diagnostic and are never
+used as a ground-truth signal.
+
+Earlier broad captures can be repaired without the PCAP when the raw packet
+sequence exists:
+
+```bash
+python3 repair_proxy_sequence.py
+```
+
+The repair utility removes packets that do not involve configured client IPs,
+recomputes direction, reconstructs TCP flags, strips endpoint identity from the
+safe sequence, and writes per-client/windowed artifacts.
+
+`prepare_fingerprinting_dataset.py` now prefers per-client feature files when
+they exist and joins `client_capture_id` to the matching federated `client_id`.
+The client ID remains grouping/ground-truth metadata and is prohibited from the
+predictor matrix.
+
+Federated client output filenames now include the client ID, for example
+`EXP_client_1_ground_truth.jsonl` and `EXP_client_1_resource.csv`. This avoids
+file collisions when logs from several client machines are copied to one
+analysis directory.
+
+## Experiment ID collision protection
+
+Version 0.8.2 refuses to append a restarted experiment to old output files.
+
+The default configuration is:
+
+```yaml
+experiment:
+  experiment_id: auto
+  output_dir: experiments/results
+  existing_output_policy: error
+```
+
+When `python3 main.py` is used interactively and output files already exist for
+the same experiment ID and role, the program displays the files and requires
+one of:
+
+```text
+1. use_new_experiment_id
+2. archive_existing_run
+3. cancel
+```
+
+Archiving moves the prior role-specific files to:
+
+```text
+<output_dir>/
+└── _archive/
+    └── <experiment_id>/
+        └── <role>/
+            └── <timestamp>/
+```
+
+The collision check is role-specific. Therefore client, server, and proxy may
+and should use the same experiment ID for the same coordinated run.
+
+For configuration-driven runs, the safe default is to stop on collision. To
+explicitly archive an earlier run before starting, set:
+
+```yaml
+experiment:
+  existing_output_policy: archive
+```
+
+If any participant fails during a coordinated FL experiment, treat that run as
+incomplete. Restart the server, clients, and proxy with one new shared
+experiment ID rather than restarting only one participant under the old run.
 
 ## Large federated model transfers
 

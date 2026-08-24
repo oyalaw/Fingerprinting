@@ -231,3 +231,83 @@ def test_fingerprint_sequence_removes_endpoint_identity(tmp_path):
 
     assert rows[0]["frame_length"] == "1514"
     assert rows[0]["direction"] == "up"
+
+
+def test_builder_joins_multi_client_proxy_alias_to_federated_client_id(tmp_path):
+    exp = "EXP_MULTI"
+    f1 = tmp_path / "EXP_MULTI__client_1_features.csv"
+    f2 = tmp_path / "EXP_MULTI__client_2_features.csv"
+    _write_proxy_features(
+        f1,
+        experiment_id=exp,
+        extra={"client_capture_id": "client_1"},
+    )
+    _write_proxy_features(
+        f2,
+        experiment_id=exp,
+        extra={"client_capture_id": "client_2"},
+    )
+
+    c1 = _base_gt(exp, "client", "jetson_orin_nano")
+    c1["client_id"] = "client_1"
+    c2 = _base_gt(exp, "client", "dell_desktop")
+    c2["client_id"] = "client_2"
+    s = _base_gt(exp, "server", "jetson_agx_orin")
+
+    c1_path = tmp_path / "EXP_MULTI_client1_ground_truth.jsonl"
+    c2_path = tmp_path / "EXP_MULTI_client2_ground_truth.jsonl"
+    s_path = tmp_path / "EXP_MULTI_server_ground_truth.jsonl"
+    _write_gt(c1_path, c1)
+    _write_gt(c2_path, c2)
+    _write_gt(s_path, s)
+
+    result = build_fingerprinting_dataset(
+        proxy_feature_csvs=[f1, f2],
+        ground_truth_jsonls=[c1_path, c2_path, s_path],
+        output_dir=tmp_path / "dataset",
+    )
+
+    with open(result["X_proxy_csv"], newline="", encoding="utf-8") as handle:
+        x_reader = csv.DictReader(handle)
+        x_rows = list(x_reader)
+    with open(result["Y_ground_truth_csv"], newline="", encoding="utf-8") as handle:
+        y_reader = csv.DictReader(handle)
+        y_rows = list(y_reader)
+
+    assert "client_capture_id" in x_reader.fieldnames
+    assert "client_capture_id" not in json.loads(
+        open(result["schema_json"], encoding="utf-8").read()
+    )["predictor_columns"]
+    assert [row["client_capture_id"] for row in x_rows] == [
+        "client_1",
+        "client_2",
+    ]
+    assert [row["device"] for row in y_rows] == [
+        "jetson_orin_nano",
+        "dell_desktop",
+    ]
+
+
+def test_builder_rejects_combined_features_when_multiple_clients_exist(tmp_path):
+    exp = "EXP_MULTI"
+    combined = tmp_path / "EXP_MULTI_features.csv"
+    _write_proxy_features(combined, experiment_id=exp)
+
+    c1 = _base_gt(exp, "client", "jetson_orin_nano")
+    c1["client_id"] = "client_1"
+    c2 = _base_gt(exp, "client", "dell_desktop")
+    c2["client_id"] = "client_2"
+    c1_path = tmp_path / "EXP_MULTI_client1_ground_truth.jsonl"
+    c2_path = tmp_path / "EXP_MULTI_client2_ground_truth.jsonl"
+    _write_gt(c1_path, c1)
+    _write_gt(c2_path, c2)
+
+    with pytest.raises(
+        FingerprintingDataError,
+        match="Use the per-client proxy feature files",
+    ):
+        build_fingerprinting_dataset(
+            proxy_feature_csvs=[combined],
+            ground_truth_jsonls=[c1_path, c2_path],
+            output_dir=tmp_path / "dataset",
+        )

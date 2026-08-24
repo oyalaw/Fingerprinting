@@ -88,6 +88,7 @@ def test_blind_proxy_forwards_bytes(tmp_path):
         }
     )
     config["capture"]["enabled"] = False
+    config["proxy"]["forwarding_log_enabled"] = True
 
     proxy = BlindTCPProxy(config)
     proxy_thread = threading.Thread(
@@ -128,3 +129,23 @@ def test_blind_proxy_forwards_bytes(tmp_path):
 
     assert (tmp_path / "PROXY_TEST_proxy_forwarding.csv").exists()
     assert (tmp_path / "PROXY_TEST_proxy_summary.json").exists()
+
+
+def test_capture_requires_client_ips_when_enabled():
+    import pytest
+    from ai_fingerprint.proxy import ProxyError
+
+    config = copy.deepcopy(DEFAULT_PROXY_CONFIG)
+    config["capture"]["interface"] = "wlan0"
+    config["capture"]["client_ip"] = None
+    config["capture"]["client_ips"] = []
+    with pytest.raises(ProxyError, match="client_ips is required"):
+        validate_proxy_config(config)
+
+
+def test_proxy_default_uses_small_pcap_snaplen():
+    assert DEFAULT_PROXY_CONFIG["capture"]["snaplen_bytes"] == 256
+
+
+def test_forwarding_chunk_csv_is_disabled_by_default():
+    assert DEFAULT_PROXY_CONFIG["proxy"]["forwarding_log_enabled"] is False

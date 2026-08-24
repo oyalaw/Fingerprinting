@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from pathlib import Path
 
 from ai_fingerprint.traffic.analysis import (
     PacketRecord,
@@ -173,3 +174,225 @@ def test_feature_vector_is_large_enough_for_hybrid_baseline():
     }
     feature_names = set(rows[0]) - metadata_fields
     assert len(feature_names) >= 80
+
+
+def test_raw_sequence_repair_filters_upstream_and_reconstructs_tcp_flags(tmp_path):
+    from ai_fingerprint.traffic.analysis import read_packet_sequence_csv
+
+    raw = tmp_path / "EXP_packet_sequence.csv"
+    fieldnames = [
+        "experiment_id",
+        "packet_index",
+        "timestamp_epoch",
+        "relative_time_sec",
+        "frame_length",
+        "direction",
+        "src_ip",
+        "dst_ip",
+        "src_port",
+        "dst_port",
+        "transport_protocol",
+        "tcp_flags_hex",
+        "tcp_syn",
+        "tcp_ack",
+        "tcp_fin",
+        "tcp_rst",
+        "retransmission",
+        "tls_record_count",
+        "tls_record_lengths",
+    ]
+    rows = [
+        {
+            "experiment_id": "EXP",
+            "packet_index": "1",
+            "timestamp_epoch": "1000.0",
+            "relative_time_sec": "0",
+            "frame_length": "74",
+            "direction": "up",
+            "src_ip": "10.42.0.47",
+            "dst_ip": "10.42.0.1",
+            "src_port": "50000",
+            "dst_port": "8080",
+            "transport_protocol": "TCP",
+            "tcp_flags_hex": "0x0002",
+            "tcp_syn": "0",
+            "tcp_ack": "0",
+            "tcp_fin": "0",
+            "tcp_rst": "0",
+            "retransmission": "0",
+            "tls_record_count": "0",
+            "tls_record_lengths": "",
+        },
+        {
+            "experiment_id": "EXP",
+            "packet_index": "2",
+            "timestamp_epoch": "1000.001",
+            "relative_time_sec": "0.001",
+            "frame_length": "74",
+            "direction": "down",  # old contaminated interpretation
+            "src_ip": "10.42.0.1",
+            "dst_ip": "10.42.0.195",
+            "src_port": "51000",
+            "dst_port": "8080",
+            "transport_protocol": "TCP",
+            "tcp_flags_hex": "0x0002",
+            "tcp_syn": "0",
+            "tcp_ack": "0",
+            "tcp_fin": "0",
+            "tcp_rst": "0",
+            "retransmission": "0",
+            "tls_record_count": "0",
+            "tls_record_lengths": "",
+        },
+        {
+            "experiment_id": "EXP",
+            "packet_index": "3",
+            "timestamp_epoch": "1000.002",
+            "relative_time_sec": "0.002",
+            "frame_length": "74",
+            "direction": "down",
+            "src_ip": "10.42.0.1",
+            "dst_ip": "10.42.0.47",
+            "src_port": "8080",
+            "dst_port": "50000",
+            "transport_protocol": "TCP",
+            "tcp_flags_hex": "0x0012",
+            "tcp_syn": "0",
+            "tcp_ack": "0",
+            "tcp_fin": "0",
+            "tcp_rst": "0",
+            "retransmission": "0",
+            "tls_record_count": "0",
+            "tls_record_lengths": "",
+        },
+    ]
+    with raw.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    packets = read_packet_sequence_csv(
+        raw,
+        client_ips=["10.42.0.47"],
+        isolate_client_facing=True,
+    )
+
+    assert len(packets) == 2
+    assert all("10.42.0.195" not in {p.src_ip, p.dst_ip} for p in packets)
+    assert packets[0].direction == "up"
+    assert packets[0].tcp_syn == 1
+    assert packets[0].tcp_ack == 0
+    assert packets[1].direction == "down"
+    assert packets[1].tcp_syn == 1
+    assert packets[1].tcp_ack == 1
+
+
+def test_capture_quality_flags_large_coalesced_frames():
+    from ai_fingerprint.traffic.analysis import capture_quality_diagnostics
+
+    packets = sample_packets() + [
+        packet(
+            5,
+            1001.0,
+            65000,
+            "up",
+            "10.0.0.2",
+            "10.0.0.1",
+        )
+    ]
+    quality = capture_quality_diagnostics(packets, interface_mtu=1500)
+    assert quality["possible_offload_coalescing"] is True
+    assert quality["oversized_frame_count"] == 1
+    assert quality["max_frame_length_bytes"] == 65000
+
+
+def test_repair_exports_per_client_and_windowed_artifacts(tmp_path):
+    from ai_fingerprint.traffic.analysis import repair_packet_sequence_artifacts
+
+    raw = tmp_path / "EXP_packet_sequence.csv"
+    fieldnames = [
+        "experiment_id", "packet_index", "timestamp_epoch",
+        "relative_time_sec", "frame_length", "direction", "src_ip",
+        "dst_ip", "src_port", "dst_port", "transport_protocol",
+        "tcp_flags_hex", "tcp_syn", "tcp_ack", "tcp_fin", "tcp_rst",
+        "retransmission", "tls_record_count", "tls_record_lengths",
+    ]
+    rows = []
+    index = 1
+    for client, base_port in [("10.42.0.47", 50000), ("10.42.0.210", 51000)]:
+        for timestamp, src, dst, flags in [
+            (1000.0, client, "10.42.0.1", "0x0002"),
+            (1000.1, "10.42.0.1", client, "0x0012"),
+            (1005.1, client, "10.42.0.1", "0x0018"),
+        ]:
+            rows.append({
+                "experiment_id": "EXP",
+                "packet_index": str(index),
+                "timestamp_epoch": str(timestamp),
+                "relative_time_sec": "0",
+                "frame_length": "1514",
+                "direction": "unknown",
+                "src_ip": src,
+                "dst_ip": dst,
+                "src_port": str(base_port if src == client else 8080),
+                "dst_port": str(8080 if dst == "10.42.0.1" else base_port),
+                "transport_protocol": "TCP",
+                "tcp_flags_hex": flags,
+                "tcp_syn": "0",
+                "tcp_ack": "0",
+                "tcp_fin": "0",
+                "tcp_rst": "0",
+                "retransmission": "0",
+                "tls_record_count": "0",
+                "tls_record_lengths": "",
+            })
+            index += 1
+    # One upstream duplicate packet must be removed.
+    rows.append({
+        "experiment_id": "EXP",
+        "packet_index": str(index),
+        "timestamp_epoch": "1000.05",
+        "relative_time_sec": "0",
+        "frame_length": "1514",
+        "direction": "down",
+        "src_ip": "10.42.0.1",
+        "dst_ip": "10.42.0.195",
+        "src_port": "52000",
+        "dst_port": "8080",
+        "transport_protocol": "TCP",
+        "tcp_flags_hex": "0x0018",
+        "tcp_syn": "0",
+        "tcp_ack": "0",
+        "tcp_fin": "0",
+        "tcp_rst": "0",
+        "retransmission": "0",
+        "tls_record_count": "0",
+        "tls_record_lengths": "",
+    })
+    with raw.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    result = repair_packet_sequence_artifacts(
+        raw_packet_csv=raw,
+        experiment_id="EXP",
+        client_ips=["10.42.0.47", "10.42.0.210"],
+        client_aliases={
+            "10.42.0.47": "client_1",
+            "10.42.0.210": "client_2",
+        },
+        output_dir=tmp_path / "repaired",
+        window_seconds=5.0,
+    )
+
+    assert result["packet_count"] == 6
+    assert set(result["per_client_artifacts"]) == {"client_1", "client_2"}
+    for alias, details in result["per_client_artifacts"].items():
+        assert details["packet_count"] == 3
+        assert Path(details["features_csv"]).exists()
+        assert Path(details["fingerprint_sequence_csv"]).exists()
+        with open(details["features_csv"], newline="", encoding="utf-8") as handle:
+            feature_rows = list(csv.DictReader(handle))
+        assert feature_rows[0]["client_capture_id"] == alias
+        assert len(feature_rows) >= 3  # overall + at least two windows

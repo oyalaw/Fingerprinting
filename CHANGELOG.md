@@ -1,6 +1,97 @@
 # Changelog
 
 
+## 0.8.4
+
+Added active packet-size fidelity protection for Linux capture interfaces.
+
+- Added `CaptureOffloadManager` for GRO/GSO/TSO/LRO lifecycle management.
+- Reads and records the original `ethtool -k` state before capture.
+- Disables only enabled, mutable capture-affecting offloads.
+- Verifies the disabled state before packet capture begins.
+- Required captures fail closed when the state cannot be verified.
+- Stops PCAP capture before restoring interface settings.
+- Restores exactly the settings changed by the experiment and verifies the
+  final state.
+- The Python application remains unprivileged; only individual `ethtool -K`
+  commands may use `sudo -n`.
+- Added `scripts/install_offload_sudoers.sh`, which installs a narrow sudoers
+  rule limited to one user, one interface, GRO/GSO/TSO/LRO, and on/off.
+- Added `OFFLOAD_PRIVILEGES.md`.
+- Each proxy run writes `<experiment_id>_proxy_offload_state.json` and embeds
+  the offload lifecycle in provenance metadata.
+- Standalone `capture` mode uses the same offload lifecycle by default.
+
+
+
+## 0.8.3
+
+Hardened inline-proxy capture for multi-client fingerprinting experiments.
+
+- Capture now requires one or more participating client IPs by default and
+  builds a client-only BPF filter, excluding the proxy-to-upstream duplicate
+  traffic leg even when both legs use the same interface and port.
+- Added per-client classifier-safe packet sequences and handcrafted feature
+  files. Combined multi-client traces are retained for audit but marked
+  classifier-ineligible.
+- Feature extraction now uses an overall row plus 5-second windows by default
+  in the proxy workflow.
+- PCAP capture defaults to a 256-byte snapshot length, retaining original frame
+  lengths while avoiding storage of full encrypted payloads; set 0 for full
+  frames.
+- Per-chunk proxy forwarding CSV logging is disabled by default; aggregate
+  forwarding counters remain in the proxy summary, reducing unnecessary
+  diagnostic output size.
+- TCP SYN/ACK/FIN/RST fields are derived from the authoritative `tcp.flags`
+  bitmask instead of relying only on tshark subfields.
+- Added MTU and GRO/GSO/TSO/LRO capture preflight metadata plus oversized-frame
+  diagnostics for possible host offload/coalescing artifacts. Interface
+  settings are never modified automatically.
+- Added `repair_proxy_sequence.py`, which can clean an earlier broad capture
+  from its raw packet-sequence CSV without requiring the original PCAP.
+- Added `client_capture_id` as non-predictor metadata and multi-client
+  ground-truth joining against the exact federated `client_id`.
+- Client federated ground-truth records now include `client_id` in the base
+  metadata so per-client joins are unambiguous.
+- Federated client ground-truth/resource filenames now include the client ID,
+  avoiding filename collisions when multiple client logs are consolidated.
+- `prepare_fingerprinting_dataset.py` prefers per-client feature files when
+  available and excludes the mixed combined feature file from classifier
+  dataset construction.
+
+
+
+## 0.8.2
+
+Added fail-closed experiment-output protection.
+
+Before a client, server, or proxy run starts, the code checks whether the same
+experiment ID already has output files for that role. The default policy is
+`error`, which refuses to append to or mix with the previous run.
+
+The no-argument interactive workflow now offers three choices when a collision
+is detected:
+
+1. use a new experiment ID;
+2. archive the existing run and continue;
+3. cancel.
+
+Archived files are moved under:
+
+`<output_dir>/_archive/<experiment_id>/<role>/<timestamp>/`
+
+The same experiment ID can still be shared across client, server, and proxy;
+collision detection is role-specific.
+
+Scripted/config-driven runs can explicitly set:
+
+`experiment.existing_output_policy: archive`
+
+to archive prior role-specific outputs automatically. The default remains
+`error`.
+
+
+
 ## 0.8.1
 
 Fixed federated transfer timeouts for large models.

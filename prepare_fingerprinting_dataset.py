@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import csv
 
 from ai_fingerprint.fingerprinting_dataset import (
     FingerprintingDataError,
@@ -8,8 +9,24 @@ from ai_fingerprint.fingerprinting_dataset import (
 )
 
 
+def _feature_file_identity(path: Path):
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            first = next(reader, None)
+            if first is None:
+                return None, False
+            experiment_id = str(
+                first.get("experiment_id", "")
+            ).strip()
+            has_client = "client_capture_id" in (reader.fieldnames or [])
+            return experiment_id or None, has_client
+    except Exception:
+        return None, False
+
+
 def discover_inputs(root: Path):
-    proxy_features = sorted(
+    candidates = sorted(
         path
         for path in root.rglob("*_features.csv")
         if (
@@ -17,22 +34,36 @@ def discover_inputs(root: Path):
             and "_X_proxy" not in path.name
         )
     )
-    ground_truth = sorted(
-        root.rglob("*_ground_truth.jsonl")
-    )
 
-    experiment_ids = {
-        path.name[: -len("_features.csv")]
-        for path in proxy_features
-    }
+    # Group by the experiment_id stored inside the CSV rather than deriving it
+    # from filenames. Per-client files use names such as
+    # EXP__client_1_features.csv while retaining experiment_id=EXP.
+    grouped = {}
+    for path in candidates:
+        experiment_id, has_client = _feature_file_identity(path)
+        if not experiment_id:
+            continue
+        grouped.setdefault(experiment_id, []).append(
+            (path, has_client)
+        )
 
+    proxy_features = []
+    for experiment_id, files in sorted(grouped.items()):
+        per_client = [path for path, flag in files if flag]
+        if per_client:
+            # When per-client traces exist, the mixed multi-client combined
+            # feature file must not enter the classifier dataset.
+            proxy_features.extend(sorted(per_client))
+        else:
+            proxy_features.extend(sorted(path for path, _ in files))
+
+    ground_truth = sorted(root.rglob("*_ground_truth.jsonl"))
+    experiment_ids = set(grouped)
     matched_ground_truth = [
         path
         for path in ground_truth
         if any(
-            path.name.startswith(
-                experiment_id + "_"
-            )
+            path.name.startswith(experiment_id + "_")
             for experiment_id in experiment_ids
         )
     ]

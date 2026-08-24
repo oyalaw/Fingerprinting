@@ -39,6 +39,7 @@ OPTIONAL_CONTEXT_LABEL_FIELDS = [
 # model's predictor matrix.
 PROXY_FEATURE_METADATA_FIELDS = [
     "experiment_id",
+    "client_capture_id",
     "row_type",
     "window_index",
     "window_start_sec",
@@ -255,18 +256,29 @@ def sanitize_packet_sequence(
     return target
 
 
-def _read_ground_truth_labels(
+def _read_ground_truth_indices(
     paths: Sequence[str | Path],
-) -> Dict[str, Dict[str, Any]]:
-    # Shared labels must agree across client and server. Device identity and
-    # operating-system context are client-side targets/context, so server
-    # hardware must never overwrite them.
+) -> tuple[
+    Dict[str, Dict[str, Any]],
+    Dict[tuple[str, str], Dict[str, Any]],
+]:
+    """Index ground truth by experiment and, when available, client ID.
+
+    Shared workload labels are experiment-level. Client device/context labels
+    are indexed by ``client_id`` so a multi-client proxy capture can be split
+    into per-client feature files without collapsing different client devices
+    into one ambiguous experiment label.
+    """
     shared_values: Dict[str, Dict[str, set[str]]] = defaultdict(
         lambda: defaultdict(set)
     )
-    client_values: Dict[str, Dict[str, set[str]]] = defaultdict(
+    client_values_any: Dict[str, Dict[str, set[str]]] = defaultdict(
         lambda: defaultdict(set)
     )
+    client_values_by_id: Dict[
+        str,
+        Dict[str, Dict[str, set[str]]],
+    ] = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
 
     if not paths:
         raise FingerprintingDataError(
@@ -279,7 +291,6 @@ def _read_ground_truth_labels(
             raise FingerprintingDataError(
                 f"Ground-truth file not found: {path}"
             )
-
         if "_resource" in path.name.lower():
             raise FingerprintingDataError(
                 "Resource telemetry files cannot be used as "
@@ -307,9 +318,6 @@ def _read_ground_truth_labels(
                     )
 
                 role = str(record.get("role", "")).strip().lower()
-
-                # Labels describing the workload must agree across the
-                # participating client/server records.
                 for field in (
                     "task",
                     "deployment",
@@ -326,28 +334,29 @@ def _read_ground_truth_labels(
                             json.dumps(value, sort_keys=True)
                         )
 
-                # Device is explicitly the client device target. This prevents
-                # the server's hardware label from becoming the target for a
-                # client-facing network trace.
                 if role == "client":
+                    client_id = str(
+                        record.get("client_id", "")
+                    ).strip()
                     for field in (
                         "device",
                         *OPTIONAL_CONTEXT_LABEL_FIELDS,
                     ):
                         value = record.get(field)
-                        if value is not None and str(value) != "":
-                            client_values[experiment_id][field].add(
-                                json.dumps(value, sort_keys=True)
-                            )
+                        if value is None or str(value) == "":
+                            continue
+                        encoded = json.dumps(value, sort_keys=True)
+                        client_values_any[experiment_id][field].add(
+                            encoded
+                        )
+                        if client_id:
+                            client_values_by_id[experiment_id][client_id][
+                                field
+                            ].add(encoded)
 
-    resolved: Dict[str, Dict[str, Any]] = {}
-    experiment_ids = set(shared_values) | set(client_values)
-
-    for experiment_id in experiment_ids:
-        label_row: Dict[str, Any] = {
-            "experiment_id": experiment_id
-        }
-
+    shared_resolved: Dict[str, Dict[str, Any]] = {}
+    for experiment_id in set(shared_values) | set(client_values_any):
+        row: Dict[str, Any] = {"experiment_id": experiment_id}
         for field in (
             "task",
             "deployment",
@@ -358,10 +367,7 @@ def _read_ground_truth_labels(
             "variant",
             "application",
         ):
-            choices = shared_values[experiment_id].get(
-                field,
-                set(),
-            )
+            choices = shared_values[experiment_id].get(field, set())
             if not choices:
                 raise FingerprintingDataError(
                     f"Ground truth for {experiment_id!r} is missing "
@@ -370,51 +376,82 @@ def _read_ground_truth_labels(
             if len(choices) != 1:
                 raise FingerprintingDataError(
                     f"Conflicting client/server ground-truth values for "
-                    f"{experiment_id!r}/{field!r}: "
-                    f"{sorted(choices)}"
+                    f"{experiment_id!r}/{field!r}: {sorted(choices)}"
                 )
-            label_row[field] = json.loads(next(iter(choices)))
+            row[field] = json.loads(next(iter(choices)))
+        shared_resolved[experiment_id] = row
 
-        device_choices = client_values[experiment_id].get(
-            "device",
-            set(),
+    experiment_labels: Dict[str, Dict[str, Any]] = {}
+    for experiment_id, shared in shared_resolved.items():
+        device_choices = client_values_any[experiment_id].get(
+            "device", set()
         )
-        if not device_choices:
-            raise FingerprintingDataError(
-                f"Ground truth for {experiment_id!r} has no client "
-                "device label. Supply the matching client ground-truth log."
-            )
-        if len(device_choices) != 1:
-            raise FingerprintingDataError(
-                f"Multiple client device labels exist for "
-                f"{experiment_id!r}: {sorted(device_choices)}. "
-                "A client-facing proxy trace must map to one client/run. "
-                "Use a unique experiment_id per captured client when device "
-                "fingerprinting is evaluated."
-            )
-        label_row["device"] = json.loads(
-            next(iter(device_choices))
-        )
-
-        for field in OPTIONAL_CONTEXT_LABEL_FIELDS:
-            choices = client_values[experiment_id].get(
-                field,
-                set(),
-            )
-            if len(choices) == 1:
-                label_row[field] = json.loads(
-                    next(iter(choices))
+        if len(device_choices) == 1:
+            row = dict(shared)
+            row["device"] = json.loads(next(iter(device_choices)))
+            for field in OPTIONAL_CONTEXT_LABEL_FIELDS:
+                choices = client_values_any[experiment_id].get(
+                    field, set()
                 )
-            elif len(choices) > 1:
+                if len(choices) == 1:
+                    row[field] = json.loads(next(iter(choices)))
+            experiment_labels[experiment_id] = row
+
+    client_labels: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for experiment_id, clients in client_values_by_id.items():
+        shared = shared_resolved.get(experiment_id)
+        if shared is None:
+            continue
+        for client_id, values in clients.items():
+            device_choices = values.get("device", set())
+            if not device_choices:
+                continue
+            if len(device_choices) != 1:
                 raise FingerprintingDataError(
-                    f"Conflicting client contextual values for "
-                    f"{experiment_id!r}/{field!r}: "
-                    f"{sorted(choices)}"
+                    f"Conflicting device values for "
+                    f"{experiment_id!r}/{client_id!r}: "
+                    f"{sorted(device_choices)}"
                 )
+            row = dict(shared)
+            row["client_id"] = client_id
+            row["device"] = json.loads(next(iter(device_choices)))
+            for field in OPTIONAL_CONTEXT_LABEL_FIELDS:
+                choices = values.get(field, set())
+                if len(choices) == 1:
+                    row[field] = json.loads(next(iter(choices)))
+                elif len(choices) > 1:
+                    raise FingerprintingDataError(
+                        f"Conflicting client contextual values for "
+                        f"{experiment_id!r}/{client_id!r}/{field!r}: "
+                        f"{sorted(choices)}"
+                    )
+            client_labels[(experiment_id, client_id)] = row
 
-        resolved[experiment_id] = label_row
+    return experiment_labels, client_labels
 
-    return resolved
+
+def _read_ground_truth_labels(
+    paths: Sequence[str | Path],
+) -> Dict[str, Dict[str, Any]]:
+    """Backward-compatible single-client experiment label resolver."""
+    experiment_labels, client_labels = _read_ground_truth_indices(paths)
+    all_experiments = {
+        experiment_id
+        for experiment_id, _ in client_labels
+    }
+    for experiment_id in all_experiments:
+        if experiment_id not in experiment_labels:
+            clients = sorted(
+                client_id
+                for exp, client_id in client_labels
+                if exp == experiment_id
+            )
+            raise FingerprintingDataError(
+                f"Multiple client labels exist for {experiment_id!r}: "
+                f"{clients}. Use per-client proxy feature files containing "
+                "client_capture_id that matches the federated client_id."
+            )
+    return experiment_labels
 
 def build_fingerprinting_dataset(
     proxy_feature_csvs: Sequence[str | Path],
@@ -434,7 +471,9 @@ def build_fingerprinting_dataset(
             "At least one proxy feature CSV is required"
         )
 
-    labels = _read_ground_truth_labels(ground_truth_jsonls)
+    experiment_labels, client_labels = _read_ground_truth_indices(
+        ground_truth_jsonls
+    )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
@@ -488,13 +527,48 @@ def build_fingerprinting_dataset(
                 experiment_id = str(
                     row.get("experiment_id", "")
                 ).strip()
-                if experiment_id not in labels:
-                    raise FingerprintingDataError(
-                        f"No ground truth found for proxy experiment "
-                        f"{experiment_id!r} from {path}"
-                    )
+                client_capture_id = str(
+                    row.get("client_capture_id", "") or ""
+                ).strip()
 
-                if labels[experiment_id]["deployment"] == "local":
+                if client_capture_id:
+                    label_key = (experiment_id, client_capture_id)
+                    if label_key not in client_labels:
+                        available = sorted(
+                            client_id
+                            for exp, client_id in client_labels
+                            if exp == experiment_id
+                        )
+                        raise FingerprintingDataError(
+                            f"No client ground truth found for proxy "
+                            f"sample {experiment_id!r}/"
+                            f"{client_capture_id!r}. Available federated "
+                            f"client IDs: {available}. Configure proxy "
+                            "client_aliases so each client IP maps to the "
+                            "matching federated client_id."
+                        )
+                    label_row_source = client_labels[label_key]
+                else:
+                    if experiment_id not in experiment_labels:
+                        available = sorted(
+                            client_id
+                            for exp, client_id in client_labels
+                            if exp == experiment_id
+                        )
+                        if available:
+                            raise FingerprintingDataError(
+                                f"Experiment {experiment_id!r} contains "
+                                f"multiple clients {available}. Use the "
+                                "per-client proxy feature files rather than "
+                                "the combined multi-client feature file."
+                            )
+                        raise FingerprintingDataError(
+                            f"No ground truth found for proxy experiment "
+                            f"{experiment_id!r} from {path}"
+                        )
+                    label_row_source = experiment_labels[experiment_id]
+
+                if label_row_source["deployment"] == "local":
                     raise FingerprintingDataError(
                         f"Experiment {experiment_id!r} is labeled local. "
                         "Local inference/training has no workload exchange "
@@ -521,11 +595,13 @@ def build_fingerprinting_dataset(
                     "row_id": row_id,
                     "experiment_id": experiment_id,
                 }
+                if client_capture_id:
+                    y_row["client_capture_id"] = client_capture_id
                 for field in GROUND_TRUTH_LABEL_FIELDS:
-                    y_row[field] = labels[experiment_id][field]
+                    y_row[field] = label_row_source[field]
                 for field in OPTIONAL_CONTEXT_LABEL_FIELDS:
-                    if field in labels[experiment_id]:
-                        y_row[field] = labels[experiment_id][field]
+                    if field in label_row_source:
+                        y_row[field] = label_row_source[field]
 
                 x_rows.append(x_row)
                 y_rows.append(y_row)
@@ -546,6 +622,9 @@ def build_fingerprinting_dataset(
     y_fields = [
         "row_id",
         "experiment_id",
+        *(["client_capture_id"] if any(
+            "client_capture_id" in row for row in y_rows
+        ) else []),
         *GROUND_TRUTH_LABEL_FIELDS,
         *[
             field
@@ -572,6 +651,7 @@ def build_fingerprinting_dataset(
             "resource_telemetry_in_predictors": False,
             "client_server_events_in_predictors": False,
             "experiment_id_is_predictor": False,
+            "client_capture_id_is_predictor": False,
             "row_type_is_predictor": False,
             "window_identifiers_are_predictors": False,
         },
