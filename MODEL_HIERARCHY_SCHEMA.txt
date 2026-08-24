@@ -1,0 +1,35 @@
+AI Fingerprinting Model Hierarchy Schema
+Version 1.0
+
+Inference hierarchy:
+family -> architecture -> variant
+
+Examples:
+cnn -> resnet -> resnet50
+rnn -> lstm -> bilstm_2layer
+transformer -> bert -> bert_base
+autoencoder -> variational_autoencoder -> beta_vae
+gnn -> gat -> gat_8head
+diffusion -> latent_diffusion -> stable_diffusion_v1_5
+gan -> stylegan -> stylegan2_ada
+mlp -> feedforward_mlp -> mlp_4layer
+state_space -> mamba -> mamba_small
+
+Important:
+precision, batch size, input size, framework, runtime, device, and application
+are separate experimental attributes. They are not model variants.
+
+Runtime behavior:
+native runtime lists only variants with a native implementation for the
+selected framework. Artifact runtimes such as ONNX Runtime, TensorRT, and
+TFLite expose the broader taxonomy and require a model artifact.
+
+Ground truth fields:
+family
+architecture
+variant
+application
+framework
+runtime
+dataset
+device

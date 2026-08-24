@@ -1,0 +1,6 @@
+torch
+torchvision
+tensorflow
+onnxruntime
+datasets
+pytest

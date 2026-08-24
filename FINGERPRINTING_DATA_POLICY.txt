@@ -1,0 +1,96 @@
+AI Fingerprinting Data Isolation Policy
+Version 1.0
+
+1. Predictor input X
+--------------------
+Only proxy-observable network data may enter X.
+
+Allowed sources:
+  *_features.csv
+  *_fingerprint_sequence.csv
+
+The handcrafted X builder accepts numeric network-derived fields from the
+proxy feature CSV. experiment_id and window identifiers are retained only as
+metadata for joining/grouped splitting and are not predictor columns.
+
+2. Ground truth Y
+-----------------
+Client/server ground-truth logs provide labels only.
+
+Required labels:
+  task
+  deployment
+  framework
+  runtime
+  family
+  architecture
+  variant
+  application
+  device
+
+The client device is used as the device target. The server device is not used
+as a target for a client-facing proxy trace.
+
+3. Resource telemetry
+---------------------
+CPU, GPU, memory, power, energy, process utilization, and other client/server
+resource telemetry are prohibited from X. The dataset builder rejects resource
+files and rejects resource-like columns if they appear in a proxy feature CSV.
+
+Resource telemetry remains valid for separate performance/system analysis.
+
+4. Packet sequence identity sanitization
+----------------------------------------
+The raw packet sequence is retained for audit:
+
+  *_packet_sequence.csv
+
+It is NOT classifier eligible because it contains endpoint identity and an
+absolute timestamp.
+
+The proxy also emits:
+
+  *_fingerprint_sequence.csv
+
+The classifier-safe sequence removes:
+
+  timestamp_epoch
+  src_ip
+  dst_ip
+  src_port
+  dst_port
+
+This reduces shortcut learning based on network identity and supports
+cross-network generalization.
+
+5. Physical X/Y separation
+--------------------------
+prepare_fingerprinting_dataset.py produces:
+
+  fingerprinting_X_proxy.csv
+  fingerprinting_Y_ground_truth.csv
+  fingerprinting_schema.json
+
+X and Y are physically separate. The schema explicitly lists predictor,
+metadata, label, and prohibited fields.
+
+6. Strict downstream loading
+----------------------------
+ai_fingerprint.fingerprinting_dataset.load_xy() returns only schema-declared
+proxy predictor columns as X and one approved ground-truth target as y.
+experiment_id, window identifiers, labels, and resource metrics cannot enter X
+through this loader.
+
+7. Local execution
+------------------
+Local inference/training does not create workload exchange observable by a
+network-side proxy. The proxy dataset builder therefore rejects deployment=local
+as a network fingerprinting sample. Local experiments remain useful for
+resource/performance baselines, or for separately defined download/telemetry
+studies.
+
+8. Splitting
+------------
+Do not randomly split packets/windows from the same experiment across train and
+test. Split by experiment/run/session/device grouping as appropriate to avoid
+leakage.

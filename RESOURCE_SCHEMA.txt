@@ -1,0 +1,51 @@
+AI Fingerprinting Resource Telemetry Schema
+Version 1.0
+
+Semantics:
+bytes_sent / bytes_received: cumulative bytes since ResourceMonitor start.
+bytes_sent_total / bytes_received_total: OS network counters at sample time.
+bytes_sent_delta / bytes_received_delta: bytes transferred since previous sample.
+cpu_usage_percent: process CPU normalized to total logical CPU capacity.
+process_cpu_usage_percent_raw: psutil process CPU where 100 percent equals one logical core.
+system_cpu_usage_percent: whole-system CPU utilization.
+memory_usage_mb: process resident set size in MiB.
+memory_usage_percent: process share of physical RAM.
+system_memory_usage_percent: whole-system RAM utilization.
+gpu_usage_percent: GPU utilization from NVIDIA SMI or Jetson sysfs when available.
+cpu_power_w: CPU package/rail power when available.
+gpu_power_w: GPU board/rail power when available.
+system_power_w: platform input power only when a system power rail is exposed.
+cpu_energy_j / gpu_energy_j / system_energy_j: cumulative energy since monitor start.
+
+Fields:
+experiment_id
+timestamp_utc
+timestamp_monotonic_ns
+relative_time_sec
+sample_index
+role
+device
+sample_interval_ms
+telemetry_source
+network_interface
+bytes_sent
+bytes_received
+bytes_sent_total
+bytes_received_total
+bytes_sent_delta
+bytes_received_delta
+cpu_usage_percent
+process_cpu_usage_percent_raw
+system_cpu_usage_percent
+memory_usage_mb
+memory_usage_percent
+system_memory_usage_percent
+gpu_usage_percent
+gpu_memory_used_mb
+gpu_memory_total_mb
+cpu_power_w
+gpu_power_w
+system_power_w
+cpu_energy_j
+gpu_energy_j
+system_energy_j

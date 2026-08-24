@@ -1,0 +1,69 @@
+experiment:
+  experiment_id: EXP_REMOTE_TRAINING_001
+  output_dir: experiments/results
+node:
+  role: client
+  host: 192.168.137.10
+  port: 5000
+transport:
+  kind: tls
+  certfile: null
+  keyfile: null
+  cafile: server.crt
+  verify_peer: false
+  server_hostname: null
+ai:
+  framework: pytorch
+  runtime: native
+  family: cnn
+  architecture: resnet
+  application: image_classification
+  dataset: cifar10
+  model_artifact: null
+  num_classes: 10
+  input_size: 224
+  sequence_length: 128
+  input_dim: 9
+  vocab_size: 10000
+  max_text_length: 128
+  variant: resnet18
+  graph_nodes: 32
+  graph_features: 16
+data:
+  root: datasets
+  split: train
+  auto_download: true
+  shuffle: true
+  max_samples: null
+  local_paths:
+    imagenet: null
+    coco2017: null
+execution:
+  repetitions: 100
+  warmup: 10
+  interval_ms: 250
+  batch_size: 1
+  precision: fp32
+  seed: 42
+  task: training
+  deployment: remote
+  operation: workload
+  epochs: 1
+  steps_per_epoch: 20
+  learning_rate: 0.001
+device:
+  label: android_phone
+  operating_system: android
+resource_monitor:
+  enabled: true
+  interval_ms: 500
+  network_interface: null
+  gpu_index: 0
+  power_enabled: true
+federated:
+  rounds: 10
+  local_epochs: 1
+  steps_per_epoch: 10
+  expected_clients: 2
+  client_id: client_1
+  aggregation: fedavg

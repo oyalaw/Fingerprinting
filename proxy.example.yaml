@@ -1,0 +1,19 @@
+experiment:
+  experiment_id: EXP_PROXY_001
+  output_dir: proxy_results
+proxy:
+  listen_host: 0.0.0.0
+  listen_port: 5000
+  upstream_host: 10.42.0.195
+  upstream_port: 5000
+  connect_timeout_sec: 30
+  buffer_size: 65536
+capture:
+  enabled: true
+  interface: wlan0
+  client_ip: 10.42.0.145
+  proxy_client_facing_ip: null
+  extract_after: true
+  burst_gap_sec: 0.05
+  idle_threshold_sec: 0.5
+  window_seconds: null

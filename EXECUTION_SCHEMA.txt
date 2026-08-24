@@ -1,0 +1,71 @@
+AI Fingerprinting Execution Schema
+Version 1.0
+
+Experiment task:
+  inference
+  training
+
+Deployment by task:
+  inference:
+    local
+    remote
+
+  training:
+    local
+    remote
+    federated
+
+Definitions:
+
+inference + local
+  The model runs on the client device. No inference request/response traffic
+  is required unless some external service is separately used.
+
+inference + remote
+  The client sends an input to the server and receives an inference result.
+
+training + local
+  The client owns the training data and performs forward pass, backward pass,
+  and optimizer updates locally.
+
+training + remote
+  The client sends training inputs and labels to a centralized server. The
+  server owns the model and performs forward pass, backward pass, and optimizer
+  updates.
+
+training + federated
+  Raw training data stays at each client. At each synchronous round, clients
+  download the global model, train locally, and upload model parameters. The
+  server performs weighted FedAvg after all configured clients submit.
+
+Federated phase labels:
+  Download
+  Training
+  Upload
+
+Configuration:
+
+execution:
+  task: inference | training
+  deployment: local | remote | federated
+  operation: workload
+  repetitions: 20
+  warmup: 2
+  interval_ms: 250
+  batch_size: 1
+  precision: fp32
+  seed: 42
+  epochs: 1
+  steps_per_epoch: 20
+  learning_rate: 0.001
+
+federated:
+  rounds: 10
+  local_epochs: 1
+  steps_per_epoch: 10
+  expected_clients: 2
+  client_id: client_1
+  aggregation: fedavg
+
+Training currently requires runtime=native. Artifact runtimes such as ONNX
+Runtime, TensorRT, and TFLite remain inference runtimes in v0.6.

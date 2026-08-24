@@ -1,0 +1,92 @@
+AI Fingerprinting Label-Blind Proxy
+Schema version 1.0
+
+Purpose
+-------
+The proxy is an inline TCP byte-stream forwarder placed between the experiment
+client and the real server.
+
+Client -> Proxy -> Real Server
+
+The proxy does not terminate TLS, decrypt payloads, parse the AI application
+protocol, or receive AI ground-truth labels.
+
+Configuration
+-------------
+experiment:
+  experiment_id: EXP_PROXY_001
+  output_dir: proxy_results
+
+proxy:
+  listen_host: 0.0.0.0
+  listen_port: 5000
+  upstream_host: 10.42.0.195
+  upstream_port: 5000
+  connect_timeout_sec: 30
+  buffer_size: 65536
+
+capture:
+  enabled: true
+  interface: wlan0
+  client_ip: 10.42.0.145
+  proxy_client_facing_ip: null
+  extract_after: true
+  burst_gap_sec: 0.05
+  idle_threshold_sec: 0.5
+  window_seconds: null
+
+Label blindness
+---------------
+The proxy configuration intentionally excludes:
+
+framework
+runtime
+task
+deployment
+family
+architecture
+variant
+application
+dataset
+device
+
+Use the same experiment_id on the client/server ground-truth logs and proxy
+capture so they can be joined after collection.
+
+Capture isolation
+-----------------
+For an inline application proxy, there are two TCP legs:
+
+client <-> proxy
+proxy <-> real server
+
+For fingerprinting, capture the client-facing leg whenever possible. Set
+capture.interface to the client-facing interface and set capture.client_ip.
+The capture filter then becomes:
+
+host <client_ip> and port <proxy_listen_port>
+
+This prevents the upstream proxy-to-server connection from being counted as a
+second copy of the experiment traffic.
+
+Outputs
+-------
+<experiment_id>.pcapng
+<experiment_id>_packet_sequence.csv
+<experiment_id>_features.csv
+<experiment_id>_manifest.json
+<experiment_id>_proxy_forwarding.csv
+<experiment_id>_proxy_summary.json
+
+The forwarding CSV is diagnostic. Its recv() chunk boundaries are NOT packet
+boundaries and should not replace the PCAP-derived packet sequence used by the
+fingerprinting classifier.
+
+TLS
+---
+TLS remains end-to-end between the experiment client and the real server. The
+proxy forwards encrypted bytes unchanged.
+
+If certificate verification is enabled on the client and the client connects
+to the proxy IP, configure transport.server_hostname on the client to the real
+server certificate name.
