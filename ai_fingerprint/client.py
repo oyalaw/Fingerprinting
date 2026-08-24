@@ -34,10 +34,18 @@ class ExperimentClient:
     def _connect(self) -> socket.socket:
         host = self.config["node"]["host"]
         port = int(self.config["node"]["port"])
+
+        # The timeout below is ONLY for establishing the TCP connection.
+        # Large FL models (for example ResNet-101) can legitimately require
+        # more than 30 seconds to upload/download on an edge/Wi-Fi testbed.
+        # Leaving the create_connection timeout on the established socket
+        # causes sock.sendall(payload) to raise TimeoutError mid-transfer.
         sock = socket.create_connection((host, port), timeout=30)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
         transport = self.config["transport"]
         if transport["kind"] != "tls":
+            sock.settimeout(None)
             return sock
 
         verify_peer = bool(transport.get("verify_peer"))
@@ -52,10 +60,12 @@ class ExperimentClient:
         if not server_hostname:
             server_hostname = host if verify_peer else None
 
-        return context.wrap_socket(
+        tls_sock = context.wrap_socket(
             sock,
             server_hostname=server_hostname,
         )
+        tls_sock.settimeout(None)
+        return tls_sock
 
     def run(self) -> None:
         execution = self.config["execution"]
@@ -431,6 +441,13 @@ class ExperimentClient:
                 update_payload = arrays_to_bytes(
                     workload.get_parameters()
                 )
+                update_mib = len(update_payload) / (1024.0 * 1024.0)
+                print(
+                    f"[client] FL round {round_index}: "
+                    f"uploading {update_mib:.2f} MiB "
+                    f"to {self.config['node']['host']}:"
+                    f"{self.config['node']['port']}"
+                )
                 upload_start = time.perf_counter_ns()
                 send_frame(
                     sock,
@@ -451,6 +468,15 @@ class ExperimentClient:
                 )
                 ack, ack_payload = recv_frame(sock)
                 upload_end = time.perf_counter_ns()
+                upload_sec = max(
+                    (upload_end - upload_start) / 1_000_000_000.0,
+                    1e-9,
+                )
+                print(
+                    f"[client] FL round {round_index}: upload/ack "
+                    f"completed in {upload_sec:.2f} s "
+                    f"({update_mib / upload_sec:.2f} MiB/s)"
+                )
 
                 if ack.get("status") != "ok":
                     raise RuntimeError(

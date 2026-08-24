@@ -108,6 +108,17 @@ class ExperimentServer:
             f"task={self.config['execution']['task']} "
             f"deployment={self.config['execution']['deployment']}"
         )
+        if (
+            self.config["execution"]["task"] == "training"
+            and self.config["execution"]["deployment"] == "federated"
+        ):
+            print(
+                f"[server] synchronous FL: "
+                f"rounds={self.config['federated']['rounds']} "
+                f"expected_clients="
+                f"{self.config['federated']['expected_clients']} "
+                f"aggregation={self.config['federated']['aggregation']}"
+            )
 
         try:
             while not self.stop_event.is_set():

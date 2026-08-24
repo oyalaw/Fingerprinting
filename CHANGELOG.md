@@ -1,6 +1,22 @@
 # Changelog
 
 
+## 0.8.1
+
+Fixed federated transfer timeouts for large models.
+
+The 30-second socket timeout is now used only while establishing the TCP
+connection. Once connected, client/server data transfer uses blocking socket
+I/O with TCP keepalive, so large global models and client updates are not
+aborted after 30 seconds.
+
+Added federated upload-size/throughput diagnostics on the client and explicit
+`expected_clients` information at server startup. In synchronous FL the server
+does not acknowledge a round update until every configured client has
+submitted.
+
+
+
 ## 0.8.0
 
 Enforced proxy-only attacker predictors.

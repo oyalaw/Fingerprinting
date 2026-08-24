@@ -10,6 +10,25 @@ The attacker facing fingerprinting pipeline uses only network observable informa
 
 
 
+
+
+## Large federated model transfers
+
+The TCP connection timeout is used only during connection establishment.
+Established experiment sockets use blocking I/O so large FL model downloads
+and uploads are not incorrectly terminated after 30 seconds.
+
+This matters for large architectures such as ResNet-101, whose serialized
+parameter state can be well over 100 MiB.
+
+For synchronous federated learning, `federated.expected_clients` on the server
+must equal the number of clients participating in the round. If the server is
+configured for five clients, each submitted client update waits until all five
+updates arrive before the round acknowledgement is returned.
+
+When using the inline proxy, clients connect to the proxy address. The proxy's
+`upstream_host`/`upstream_port` point to the real server.
+
 ## Enforced fingerprinting data isolation
 
 The code now enforces the research threat model rather than relying only on
