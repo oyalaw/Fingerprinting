@@ -1232,7 +1232,7 @@ def _resolved_client_aliases(
     resolved: Dict[str, str] = {}
     used: set[str] = set()
     for index, ip in enumerate(client_ips, start=1):
-        fallback = f"client_{index:03d}"
+        fallback = f"trace_{index:03d}"
         alias = _safe_alias(
             str(supplied.get(ip, fallback)),
             fallback,
@@ -1255,6 +1255,10 @@ def _feature_count(row: Dict[str, Any]) -> int:
         "window_index",
         "window_start_sec",
         "window_end_sec",
+        "trace_start_offset_sec",
+        "trace_end_offset_sec",
+        "window_start_global_sec",
+        "window_end_global_sec",
     }
     return len([key for key in row if key not in metadata])
 
@@ -1469,11 +1473,45 @@ def _export_packets_artifacts(
                 idle_threshold_sec=idle_threshold_sec,
                 window_seconds=window_seconds,
             )
+            combined_start_epoch = (
+                packets[0].timestamp_epoch if packets else 0.0
+            )
+            trace_start_offset_sec = max(
+                0.0,
+                client_packets[0].timestamp_epoch
+                - combined_start_epoch,
+            )
+            trace_end_offset_sec = max(
+                trace_start_offset_sec,
+                client_packets[-1].timestamp_epoch
+                - combined_start_epoch,
+            )
+
             rows_with_client: List[Dict[str, Any]] = []
             for row in rows:
+                window_start_local = float(
+                    row.get("window_start_sec", 0.0)
+                )
+                window_end_local = float(
+                    row.get("window_end_sec", 0.0)
+                )
                 enriched = {
                     "experiment_id": row["experiment_id"],
                     "client_capture_id": alias,
+                    "trace_start_offset_sec": (
+                        trace_start_offset_sec
+                    ),
+                    "trace_end_offset_sec": (
+                        trace_end_offset_sec
+                    ),
+                    "window_start_global_sec": (
+                        trace_start_offset_sec
+                        + window_start_local
+                    ),
+                    "window_end_global_sec": (
+                        trace_start_offset_sec
+                        + window_end_local
+                    ),
                 }
                 enriched.update(
                     {
@@ -1494,6 +1532,11 @@ def _export_packets_artifacts(
                 "fingerprint_sequence_csv": str(client_safe),
                 "features_csv": str(client_features),
                 "feature_row_count": len(rows_with_client),
+                "trace_start_offset_sec": trace_start_offset_sec,
+                "trace_end_offset_sec": trace_end_offset_sec,
+                "global_time_reference": (
+                    "combined_capture_start"
+                ),
                 "classifier_eligible": True,
             }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -48,6 +49,9 @@ def ground_truth_record(config: Dict[str, Any]) -> Dict[str, Any]:
         "operating_system": config["device"]["operating_system"],
         "task": config["execution"]["task"],
         "deployment": config["execution"]["deployment"],
+        "transport": config.get("transport", {}).get(
+            "kind", "tcp"
+        ),
         "execution_mode": (
             f"{config['execution']['task']}_"
             f"{config['execution']['deployment']}"
@@ -86,10 +90,13 @@ class EventLogger:
 
     def write(self, event: str, **fields: Any) -> None:
         record = dict(self.base)
+        now = dt.datetime.now(dt.timezone.utc)
         record.update(
             {
                 "event": event,
-                "timestamp_utc": utc_now_iso(),
+                "timestamp_utc": now.isoformat(),
+                "timestamp_epoch": now.timestamp(),
+                "timestamp_monotonic_ns": time.monotonic_ns(),
             }
         )
         record.update(fields)

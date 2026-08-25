@@ -25,13 +25,11 @@ capture:
     - 10.42.0.47
     - 10.42.0.210
 
-  # Optional but recommended for federated learning. Map each network client
-  # to its exact federated client_id so per-client proxy features can be joined
-  # to the correct client-side ground truth. These aliases are metadata only
-  # and are never model predictors.
-  client_aliases:
-    10.42.0.47: client_1
-    10.42.0.210: client_2
+  # Optional capture aliases. Leave this empty for new federated runs.
+  # Neutral trace_### identifiers will be generated, then dataset preparation
+  # resolves each trace to the actual federated client_id using the client's
+  # network_registration ground truth. These mappings never enter X.
+  client_aliases: {}
 
   strict_client_isolation: true
   per_client_artifacts: true

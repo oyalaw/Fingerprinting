@@ -27,12 +27,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "port": 5000,
     },
     "transport": {
+        # Kept as tcp for backward-compatible scripted configs. The
+        # interactive remote/federated workflow now offers TLS first.
         "kind": "tcp",
         "certfile": None,
         "keyfile": None,
         "cafile": None,
         "verify_peer": False,
         "server_hostname": None,
+        "auto_generate_self_signed": False,
+        "self_signed_common_name": "ai-fingerprint-server",
+        "self_signed_valid_days": 30,
+        "minimum_tls_version": "TLSv1_2",
     },
     "ai": {
         "framework": "pytorch",
@@ -95,6 +101,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "network_interface": None,
         "gpu_index": 0,
         "power_enabled": True,
+        # Probe nvidia-smi once. Do not repeatedly invoke it on systems
+        # where the binary exists but no usable NVIDIA GPU is present.
+        "disable_unusable_nvidia_smi": True,
     },
 }
 
@@ -325,9 +334,30 @@ def validate_config(config: Dict[str, Any]) -> None:
         raise ConfigError("transport.kind must be tcp or tls")
 
     if kind == "tls" and role == "server":
-        if not config["transport"].get("certfile") or not config["transport"].get("keyfile"):
+        has_material = bool(
+            config["transport"].get("certfile")
+            and config["transport"].get("keyfile")
+        )
+        auto_generate = bool(
+            config["transport"].get(
+                "auto_generate_self_signed", False
+            )
+        )
+        if not has_material and not auto_generate:
             raise ConfigError(
-                "TLS server requires transport.certfile and transport.keyfile"
+                "TLS server requires transport.certfile/keyfile or "
+                "transport.auto_generate_self_signed=true"
+            )
+
+    if kind == "tls":
+        minimum = str(
+            config["transport"].get(
+                "minimum_tls_version", "TLSv1_2"
+            )
+        )
+        if minimum not in {"TLSv1_2", "TLSv1_3"}:
+            raise ConfigError(
+                "transport.minimum_tls_version must be TLSv1_2 or TLSv1_3"
             )
 
     if int(config["node"]["port"]) <= 0:

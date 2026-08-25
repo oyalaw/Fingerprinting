@@ -33,9 +33,10 @@ capture:
   client_ips:
     - 10.42.0.47
     - 10.42.0.210
-  client_aliases:
-    10.42.0.47: client_1
-    10.42.0.210: client_2
+  # Optional. Neutral trace IDs are generated when omitted. For new FL
+  # runs, prepare_fingerprinting_dataset.py resolves the actual client_id
+  # automatically from network-registration ground truth.
+  client_aliases: {}
   strict_client_isolation: true
   per_client_artifacts: true
   snaplen_bytes: 256
@@ -173,3 +174,14 @@ proxy forwards encrypted bytes unchanged.
 If certificate verification is enabled on the client and the client connects
 to the proxy IP, configure transport.server_hostname on the client to the real
 server certificate name.
+
+
+Automatic client-ID resolution
+------------------------------
+New federated clients write network_registration ground-truth records with the
+actual client_id and source IP. The proxy manifest already records client IPs
+and capture trace aliases. Dataset preparation joins those two metadata sources
+to resolve the actual federated client automatically.
+
+This mapping is not attacker input. IP addresses, client IDs, and global timing
+alignment fields are excluded from the predictor matrix.

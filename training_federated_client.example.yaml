@@ -9,9 +9,11 @@ transport:
   kind: tls
   certfile: null
   keyfile: null
-  cafile: server.crt
+  cafile: null
   verify_peer: false
-  server_hostname: null
+  server_hostname: ai-fingerprint-server
+  auto_generate_self_signed: false
+  minimum_tls_version: TLSv1_2
 ai:
   framework: pytorch
   runtime: native

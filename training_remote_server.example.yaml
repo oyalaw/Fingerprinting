@@ -7,11 +7,15 @@ node:
   port: 5000
 transport:
   kind: tls
-  certfile: server.crt
-  keyfile: server.key
+  certfile: null
+  keyfile: null
   cafile: null
   verify_peer: false
   server_hostname: null
+  auto_generate_self_signed: true
+  self_signed_common_name: ai-fingerprint-server
+  self_signed_valid_days: 30
+  minimum_tls_version: TLSv1_2
 ai:
   framework: pytorch
   runtime: native

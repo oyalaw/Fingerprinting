@@ -44,6 +44,10 @@ PROXY_FEATURE_METADATA_FIELDS = [
     "window_index",
     "window_start_sec",
     "window_end_sec",
+    "trace_start_offset_sec",
+    "trace_end_offset_sec",
+    "window_start_global_sec",
+    "window_end_global_sec",
 ]
 
 # Raw packet identifiers are observable on the wire, but they are intentionally
@@ -458,6 +462,9 @@ def build_fingerprinting_dataset(
     ground_truth_jsonls: Sequence[str | Path],
     output_dir: str | Path,
     prefix: str = "fingerprinting",
+    client_capture_id_map: Mapping[
+        tuple[str, str], str
+    ] | None = None,
 ) -> Dict[str, Any]:
     """
     Build physically separated X and Y files.
@@ -531,8 +538,22 @@ def build_fingerprinting_dataset(
                     row.get("client_capture_id", "") or ""
                 ).strip()
 
+                resolved_client_id = ""
                 if client_capture_id:
-                    label_key = (experiment_id, client_capture_id)
+                    capture_key = (
+                        experiment_id,
+                        client_capture_id,
+                    )
+                    resolved_client_id = (
+                        (client_capture_id_map or {}).get(
+                            capture_key,
+                            client_capture_id,
+                        )
+                    )
+                    label_key = (
+                        experiment_id,
+                        resolved_client_id,
+                    )
                     if label_key not in client_labels:
                         available = sorted(
                             client_id
@@ -542,10 +563,12 @@ def build_fingerprinting_dataset(
                         raise FingerprintingDataError(
                             f"No client ground truth found for proxy "
                             f"sample {experiment_id!r}/"
-                            f"{client_capture_id!r}. Available federated "
-                            f"client IDs: {available}. Configure proxy "
-                            "client_aliases so each client IP maps to the "
-                            "matching federated client_id."
+                            f"{client_capture_id!r}. Resolved client ID: "
+                            f"{resolved_client_id!r}. Available federated "
+                            f"client IDs: {available}. For new runs, keep "
+                            "the proxy manifest and client "
+                            "network_registration events together so the "
+                            "mapping can be resolved automatically."
                         )
                     label_row_source = client_labels[label_key]
                 else:
@@ -597,6 +620,9 @@ def build_fingerprinting_dataset(
                 }
                 if client_capture_id:
                     y_row["client_capture_id"] = client_capture_id
+                    y_row["resolved_client_id"] = (
+                        resolved_client_id
+                    )
                 for field in GROUND_TRUTH_LABEL_FIELDS:
                     y_row[field] = label_row_source[field]
                 for field in OPTIONAL_CONTEXT_LABEL_FIELDS:
@@ -625,6 +651,9 @@ def build_fingerprinting_dataset(
         *(["client_capture_id"] if any(
             "client_capture_id" in row for row in y_rows
         ) else []),
+        *(["resolved_client_id"] if any(
+            "resolved_client_id" in row for row in y_rows
+        ) else []),
         *GROUND_TRUTH_LABEL_FIELDS,
         *[
             field
@@ -644,7 +673,7 @@ def build_fingerprinting_dataset(
         writer.writerows(y_rows)
 
     schema = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "policy": {
             "predictor_source": "proxy_only",
             "ground_truth_source": "client_server_labels_only",
@@ -652,6 +681,8 @@ def build_fingerprinting_dataset(
             "client_server_events_in_predictors": False,
             "experiment_id_is_predictor": False,
             "client_capture_id_is_predictor": False,
+            "resolved_client_id_is_predictor": False,
+            "global_timing_alignment_is_predictor": False,
             "row_type_is_predictor": False,
             "window_identifiers_are_predictors": False,
         },

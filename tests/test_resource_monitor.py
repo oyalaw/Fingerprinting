@@ -49,11 +49,14 @@ def test_resource_monitor_writes_csv_and_summary(tmp_path):
     assert set(RESOURCE_FIELDS).issubset(rows[0].keys())
     assert rows[0]["role"] == "client"
     assert rows[0]["device"] == "test_device"
+    assert "actual_interval_ms" in rows[0]
+    assert "sampling_duration_ms" in rows[0]
+    assert "sampling_overrun_ms" in rows[0]
 
     saved_summary = json.loads(
         monitor.summary_path.read_text(encoding="utf-8")
     )
-    assert saved_summary["schema_version"] == "1.0"
+    assert saved_summary["schema_version"] == "1.1"
 
 
 def test_resource_monitor_disabled(tmp_path):

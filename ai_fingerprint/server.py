@@ -22,13 +22,17 @@ from .protocol import (
     send_frame,
 )
 from .resource_monitor import ResourceMonitor
+from .tls import ensure_server_tls_material
 from .workloads import build_workload
 
 
 class ExperimentServer:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
-        self.logger = EventLogger(config)
+        self._tls_material = ensure_server_tls_material(
+            self.config
+        )
+        self.logger = EventLogger(self.config)
         self.workload = None
         self.stop_event = threading.Event()
 
@@ -55,6 +59,14 @@ class ExperimentServer:
             return conn
 
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        minimum = str(
+            transport.get("minimum_tls_version", "TLSv1_2")
+        )
+        context.minimum_version = (
+            ssl.TLSVersion.TLSv1_3
+            if minimum == "TLSv1_3"
+            else ssl.TLSVersion.TLSv1_2
+        )
         context.load_cert_chain(
             certfile=transport["certfile"],
             keyfile=transport["keyfile"],
@@ -383,13 +395,16 @@ class ExperimentServer:
         coordinator = self._ensure_federated_coordinator()
         round_index = int(header["round"])
         client_id = str(header["client_id"])
-        parameters = bytes_to_arrays(payload)
 
+        # recv_frame() has already received the full payload before this
+        # handler is entered. Log this boundary before numpy deserialization
+        # so the server timestamp is a clean network receive-completion mark.
         self.logger.write(
             "federated_phase",
             round=round_index,
             client_id=client_id,
             phase="Upload",
+            boundary="receive_complete",
             bytes_received=len(payload),
             num_examples=int(
                 header.get("num_examples", 1)
@@ -397,6 +412,9 @@ class ExperimentServer:
             client_loss=header.get("loss"),
             client_accuracy=header.get("accuracy"),
         )
+
+        parameters = bytes_to_arrays(payload)
+        sync_wait_start = time.perf_counter_ns()
 
         next_round, done = coordinator.submit_update(
             round_index=round_index,
@@ -409,6 +427,18 @@ class ExperimentServer:
                 "loss": header.get("loss"),
                 "accuracy": header.get("accuracy"),
             },
+        )
+
+        sync_wait_end = time.perf_counter_ns()
+        self.logger.write(
+            "federated_sync_wait",
+            round=round_index,
+            client_id=client_id,
+            wait_time_ms=(
+                sync_wait_end - sync_wait_start
+            ) / 1_000_000.0,
+            next_round=next_round,
+            done=done,
         )
 
         send_frame(

@@ -38,6 +38,7 @@ from .proxy import (
 )
 from .runner import run
 from .traffic import FeatureExtractionError, extract_capture_artifacts
+from .tls import TLSConfigurationError
 
 
 def choose(prompt: str, choices: List[str]) -> str:
@@ -284,6 +285,77 @@ def interactive_configure(
         )
         config["node"]["port"] = ask_int("Port", 5000)
 
+        # TLS is presented first for new network experiments. TCP remains
+        # available for controlled baseline/debug runs.
+        transport_kind = choose(
+            "Select network transport",
+            ["tls", "tcp"],
+        )
+        config["transport"]["kind"] = transport_kind
+
+        if transport_kind == "tls":
+            config["transport"][
+                "minimum_tls_version"
+            ] = choose(
+                "Minimum TLS version",
+                ["TLSv1_2", "TLSv1_3"],
+            )
+
+            if role == "server":
+                certfile = ask_text(
+                    "TLS certificate path; leave blank to auto-generate "
+                    "a research self-signed certificate",
+                    "",
+                ).strip()
+                if certfile:
+                    keyfile = ask_text(
+                        "TLS private-key path",
+                        "",
+                    ).strip()
+                    if not keyfile:
+                        raise ValueError(
+                            "TLS private-key path is required when "
+                            "a certificate path is supplied"
+                        )
+                    config["transport"]["certfile"] = certfile
+                    config["transport"]["keyfile"] = keyfile
+                    config["transport"][
+                        "auto_generate_self_signed"
+                    ] = False
+                else:
+                    config["transport"][
+                        "auto_generate_self_signed"
+                    ] = True
+                    config["transport"][
+                        "self_signed_common_name"
+                    ] = ask_text(
+                        "Self-signed certificate name",
+                        "ai-fingerprint-server",
+                    )
+            else:
+                verify_peer = ask_yes_no(
+                    "Verify the server TLS certificate",
+                    False,
+                )
+                config["transport"][
+                    "verify_peer"
+                ] = verify_peer
+                if verify_peer:
+                    cafile = ask_text(
+                        "CA/certificate file used to verify the server",
+                        "",
+                    ).strip()
+                    hostname = ask_text(
+                        "TLS server hostname from the certificate",
+                        "ai-fingerprint-server",
+                    ).strip()
+                    config["transport"]["cafile"] = (
+                        cafile or None
+                    )
+                    config["transport"][
+                        "server_hostname"
+                    ] = hostname or None
+
     config["ai"]["input_size"] = ask_int("Image input size", 224)
     config["execution"]["batch_size"] = ask_int("Batch size", 1)
 
@@ -449,7 +521,9 @@ def interactive_proxy_configure() -> Dict[str, Any]:
         )
 
         alias_text = ask_text(
-            "Optional client aliases as IP=client_id pairs, comma-separated",
+            "Optional capture aliases as IP=alias pairs. Leave blank to "
+            "use neutral trace IDs; FL client IDs are auto-resolved later "
+            "from client network-registration ground truth",
             "",
         )
         aliases: Dict[str, str] = {}
@@ -929,6 +1003,7 @@ def main() -> None:
 
     except (
         CaptureOffloadError,
+        TLSConfigurationError,
         ConfigError,
         DatasetError,
         ExistingExperimentError,

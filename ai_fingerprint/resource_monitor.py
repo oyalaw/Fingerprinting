@@ -19,7 +19,7 @@ import psutil
 from .metadata import output_role_token
 
 
-RESOURCE_SCHEMA_VERSION = "1.0"
+RESOURCE_SCHEMA_VERSION = "1.1"
 
 RESOURCE_FIELDS = [
     "experiment_id",
@@ -30,6 +30,9 @@ RESOURCE_FIELDS = [
     "role",
     "device",
     "sample_interval_ms",
+    "actual_interval_ms",
+    "sampling_duration_ms",
+    "sampling_overrun_ms",
     "telemetry_source",
     "network_interface",
     "bytes_sent",
@@ -234,13 +237,42 @@ class RaplCollector:
 
 
 class NvidiaSmiCollector:
-    def __init__(self, gpu_index: int = 0) -> None:
+    def __init__(
+        self,
+        gpu_index: int = 0,
+        disable_if_unusable: bool = True,
+    ) -> None:
         self.gpu_index = int(gpu_index)
         self.executable = shutil.which("nvidia-smi")
+        self.disable_if_unusable = bool(disable_if_unusable)
+        self._usable = self._probe()
+
+    def _probe(self) -> bool:
+        if not self.executable:
+            return False
+        try:
+            completed = subprocess.run(
+                [
+                    self.executable,
+                    f"--id={self.gpu_index}",
+                    "--query-gpu=index",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=0.75,
+                check=False,
+            )
+        except Exception:
+            return False
+        return (
+            completed.returncode == 0
+            and bool(completed.stdout.strip())
+        )
 
     @property
     def available(self) -> bool:
-        return self.executable is not None
+        return bool(self.executable and self._usable)
 
     def sample(self) -> Dict[str, Optional[float]]:
         empty = {
@@ -249,7 +281,7 @@ class NvidiaSmiCollector:
             "gpu_memory_total_mb": None,
             "gpu_power_w": None,
         }
-        if not self.executable:
+        if not self.available:
             return empty
 
         query = (
@@ -271,9 +303,13 @@ class NvidiaSmiCollector:
                 check=False,
             )
         except Exception:
+            if self.disable_if_unusable:
+                self._usable = False
             return empty
 
         if completed.returncode != 0 or not completed.stdout.strip():
+            if self.disable_if_unusable:
+                self._usable = False
             return empty
 
         first_line = completed.stdout.strip().splitlines()[0]
@@ -455,7 +491,14 @@ class ResourceMonitor:
         self.cpu_count = max(psutil.cpu_count(logical=True) or 1, 1)
         self.network = NetworkCounter(self.network_interface)
         self.rapl = RaplCollector() if self.power_enabled else None
-        self.nvidia = NvidiaSmiCollector(self.gpu_index)
+        self.nvidia = NvidiaSmiCollector(
+            self.gpu_index,
+            disable_if_unusable=bool(
+                monitor_cfg.get(
+                    "disable_unusable_nvidia_smi", True
+                )
+            ),
+        )
         self.jetson = JetsonCollector()
 
         self._stop_event = threading.Event()
@@ -470,6 +513,7 @@ class ResourceMonitor:
         self._last_cpu_power_w: Optional[float] = None
         self._last_gpu_power_w: Optional[float] = None
         self._last_system_power_w: Optional[float] = None
+        self._last_sample_start_monotonic: Optional[float] = None
 
         # Prime nonblocking psutil CPU counters.
         self.process.cpu_percent(interval=None)
@@ -509,7 +553,10 @@ class ResourceMonitor:
             self._thread.join(timeout=max(5.0, self.interval_sec * 4))
             self._thread = None
 
-        # Capture one final sample after the workload exits.
+        # Capture one final sample after the workload exits. Do not treat
+        # this unscheduled terminal sample as part of the periodic cadence
+        # distribution.
+        self._last_sample_start_monotonic = None
         self._capture_sample()
         summary = self._build_summary()
         self.summary_path.write_text(
@@ -598,13 +645,21 @@ class ResourceMonitor:
         if not self.enabled:
             return
 
-        now_mono = time.monotonic()
+        sample_start_mono = time.monotonic()
+        now_mono = sample_start_mono
         now_ns = time.monotonic_ns()
         relative = (
             now_mono - self._start_monotonic
             if self._start_monotonic is not None
             else 0.0
         )
+        actual_interval_ms = None
+        if self._last_sample_start_monotonic is not None:
+            actual_interval_ms = (
+                sample_start_mono
+                - self._last_sample_start_monotonic
+            ) * 1000.0
+        self._last_sample_start_monotonic = sample_start_mono
 
         network = self.network.sample()
 
@@ -640,6 +695,14 @@ class ResourceMonitor:
         if cpu_energy_j is None and cpu_power_w is not None:
             cpu_energy_j = self._cpu_energy_integrated_j
 
+        sampling_duration_ms = (
+            time.monotonic() - sample_start_mono
+        ) * 1000.0
+        sampling_overrun_ms = max(
+            0.0,
+            sampling_duration_ms - self.interval_ms,
+        )
+
         record: Dict[str, Any] = {
             "experiment_id": self.experiment_id,
             "timestamp_utc": utc_now_iso(),
@@ -649,6 +712,9 @@ class ResourceMonitor:
             "role": self.role,
             "device": self.device,
             "sample_interval_ms": self.interval_ms,
+            "actual_interval_ms": actual_interval_ms,
+            "sampling_duration_ms": sampling_duration_ms,
+            "sampling_overrun_ms": sampling_overrun_ms,
             "telemetry_source": self.telemetry_sources,
             **network,
             "cpu_usage_percent": process_cpu_normalized,
@@ -723,6 +789,15 @@ class ResourceMonitor:
             "sample_interval_ms": self.interval_ms,
             "sample_count": len(self._records),
             "telemetry_source": self.telemetry_sources,
+            "actual_interval_ms": self._metric_summary(
+                "actual_interval_ms"
+            ),
+            "sampling_duration_ms": self._metric_summary(
+                "sampling_duration_ms"
+            ),
+            "sampling_overrun_ms": self._metric_summary(
+                "sampling_overrun_ms"
+            ),
             "network_interface": last.get("network_interface"),
             "bytes_sent": last.get("bytes_sent", 0),
             "bytes_received": last.get("bytes_received", 0),

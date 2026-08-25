@@ -160,3 +160,34 @@ be repaired without the PCAP using:
 The repair process retains only packets involving configured client IPs,
 recomputes direction, reconstructs TCP flags from tcp_flags_hex, and produces
 clean per-client/windowed classifier artifacts.
+
+
+15. Client identity resolution
+------------------------------
+Proxy capture aliases are not assumed to be federated client IDs. New
+federated clients log a ground-truth network_registration event containing the
+actual client_id and source IP. Dataset preparation joins that source IP to the
+proxy manifest's client-IP/capture-trace mapping and resolves the correct
+client label out of band. IP addresses and resolved client IDs are never
+predictors.
+
+16. Cross-client time alignment
+-------------------------------
+Per-client feature files may contain trace_start_offset_sec,
+trace_end_offset_sec, window_start_global_sec, and window_end_global_sec.
+These are alignment/grouping metadata relative to the combined proxy capture,
+not predictor columns.
+
+17. Federated Upload semantics
+------------------------------
+For network-phase ground truth, Upload denotes the client model-send interval.
+Waiting after the send for synchronous round release is Idle with
+reason=synchronous_round_wait. A separate diagnostic transaction event may
+record the total send-plus-wait duration.
+
+18. Encrypted network experiments
+---------------------------------
+New remote/federated collections should prefer TLS when the study claims
+encrypted traffic. The inline proxy remains label-blind and does not terminate
+TLS. Plain TCP remains valid for controlled debugging/baseline experiments but
+must not be presented as encrypted-traffic evidence.

@@ -60,6 +60,15 @@ class ExperimentClient:
         if not server_hostname:
             server_hostname = host if verify_peer else None
 
+        minimum = str(
+            transport.get("minimum_tls_version", "TLSv1_2")
+        )
+        context.minimum_version = (
+            ssl.TLSVersion.TLSv1_3
+            if minimum == "TLSv1_3"
+            else ssl.TLSVersion.TLSv1_2
+        )
+
         tls_sock = context.wrap_socket(
             sock,
             server_hostname=server_hostname,
@@ -345,6 +354,19 @@ class ExperimentClient:
         workload = build_workload(self.config)
 
         with self._connect() as sock:
+            local_address = sock.getsockname()
+            self.logger.write(
+                "network_registration",
+                client_id=client_id,
+                local_ip=str(local_address[0]),
+                local_port=int(local_address[1]),
+                remote_host=str(self.config["node"]["host"]),
+                remote_port=int(self.config["node"]["port"]),
+                transport=str(
+                    self.config["transport"]["kind"]
+                ),
+            )
+
             for _ in range(configured_rounds):
                 request_id = uuid.uuid4().hex
                 download_start = time.perf_counter_ns()
@@ -466,16 +488,43 @@ class ExperimentClient:
                     },
                     update_payload,
                 )
-                ack, ack_payload = recv_frame(sock)
-                upload_end = time.perf_counter_ns()
-                upload_sec = max(
-                    (upload_end - upload_start) / 1_000_000_000.0,
+                upload_send_end = time.perf_counter_ns()
+
+                # Upload is now strictly the client-side send interval.
+                # Synchronous waiting for the round release is recorded as
+                # Idle so the network-side phase labels match observable
+                # communication behavior.
+                upload_transfer_sec = max(
+                    (
+                        upload_send_end - upload_start
+                    ) / 1_000_000_000.0,
                     1e-9,
                 )
-                print(
-                    f"[client] FL round {round_index}: upload/ack "
-                    f"completed in {upload_sec:.2f} s "
-                    f"({update_mib / upload_sec:.2f} MiB/s)"
+                self.logger.write(
+                    "federated_phase",
+                    round=round_index,
+                    client_id=client_id,
+                    phase="Upload",
+                    bytes_sent=len(update_payload),
+                    phase_time_ms=(
+                        upload_send_end - upload_start
+                    ) / 1_000_000.0,
+                )
+
+                sync_wait_start = upload_send_end
+                ack, ack_payload = recv_frame(sock)
+                sync_wait_end = time.perf_counter_ns()
+                sync_wait_sec = max(
+                    (
+                        sync_wait_end - sync_wait_start
+                    ) / 1_000_000_000.0,
+                    0.0,
+                )
+                transaction_sec = max(
+                    (
+                        sync_wait_end - upload_start
+                    ) / 1_000_000_000.0,
+                    1e-9,
                 )
 
                 if ack.get("status") != "ok":
@@ -490,13 +539,37 @@ class ExperimentClient:
                     "federated_phase",
                     round=round_index,
                     client_id=client_id,
-                    phase="Upload",
-                    bytes_sent=len(update_payload),
+                    phase="Idle",
+                    reason="synchronous_round_wait",
                     next_round=ack.get("next_round"),
                     done=ack.get("done", False),
                     phase_time_ms=(
-                        upload_end - upload_start
+                        sync_wait_end - sync_wait_start
                     ) / 1_000_000.0,
+                )
+                self.logger.write(
+                    "federated_upload_transaction",
+                    round=round_index,
+                    client_id=client_id,
+                    bytes_sent=len(update_payload),
+                    upload_transfer_time_ms=(
+                        upload_send_end - upload_start
+                    ) / 1_000_000.0,
+                    sync_wait_time_ms=(
+                        sync_wait_end - sync_wait_start
+                    ) / 1_000_000.0,
+                    transaction_time_ms=(
+                        sync_wait_end - upload_start
+                    ) / 1_000_000.0,
+                    next_round=ack.get("next_round"),
+                    done=ack.get("done", False),
+                )
+                print(
+                    f"[client] FL round {round_index}: upload transfer "
+                    f"{upload_transfer_sec:.2f} s "
+                    f"({update_mib / upload_transfer_sec:.2f} MiB/s), "
+                    f"sync wait {sync_wait_sec:.2f} s, "
+                    f"transaction {transaction_sec:.2f} s"
                 )
 
                 if ack.get("done"):

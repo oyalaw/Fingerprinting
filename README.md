@@ -1,6 +1,6 @@
 # AI Fingerprinting Experiment Codebase
 
-Version 0.8.4 enforces attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
+Version 0.8.5 enforces attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
 
 The same repository supports client execution, server execution, proxy capture, real dataset loading, and ground truth logging.
 
@@ -14,6 +14,107 @@ The attacker facing fingerprinting pipeline uses only network observable informa
 
 
 
+
+
+## Experiment-4 corrections and encrypted FL workflow (v0.8.5)
+
+Version 0.8.5 incorporates the issues exposed by the two-client ResNet-101
+federated experiment.
+
+### Federated phase semantics
+
+Client ground truth now records four network-relevant states:
+
+```text
+Download -> Training -> Upload -> Idle
+```
+
+`Upload` ends when the client-side model send call completes. The subsequent
+synchronous wait for the server to advance the round is logged separately as:
+
+```text
+phase: Idle
+reason: synchronous_round_wait
+```
+
+A `federated_upload_transaction` diagnostic record also stores:
+
+- `upload_transfer_time_ms`
+- `sync_wait_time_ms`
+- `transaction_time_ms`
+
+The server logs an Upload `receive_complete` boundary immediately after the
+full frame payload has arrived and before model deserialization, and separately
+records its synchronous coordinator wait.
+
+Every ground-truth event now includes UTC, epoch, and monotonic timestamps for
+alignment. Monotonic timestamps remain host-local and must not be compared
+across machines.
+
+### Client identity mapping without manual alias assumptions
+
+Each federated client emits a `network_registration` ground-truth event
+containing its actual `client_id` and the local source IP used for the
+connection.
+
+The proxy may use neutral trace aliases such as `trace_001` and `trace_002`.
+During dataset preparation, `prepare_fingerprinting_dataset.py` joins:
+
+```text
+proxy manifest: client IP -> capture trace ID
+client GT:      client IP -> actual federated client_id
+```
+
+and automatically resolves the correct client label. This prevents a manually
+entered proxy alias from silently swapping two federated clients.
+
+The IP/client mapping is grouping metadata only and is excluded from X.
+
+### Cross-client timing preservation
+
+Per-client feature files now retain non-predictor alignment metadata:
+
+```text
+trace_start_offset_sec
+trace_end_offset_sec
+window_start_global_sec
+window_end_global_sec
+```
+
+The global reference is the start of the combined proxy capture. The
+classifier-safe packet sequence continues to use local relative time, while the
+manifest provides the trace offset needed to reconstruct global timing.
+
+### Resource-monitor cadence protection
+
+`nvidia-smi` is probed once. If the binary exists but the requested GPU is not
+usable, repeated `nvidia-smi` subprocess calls are disabled so a CPU-only
+client does not stretch a nominal 500-ms sampling interval.
+
+Resource CSVs now record:
+
+```text
+actual_interval_ms
+sampling_duration_ms
+sampling_overrun_ms
+```
+
+and the summary reports distributions for all three.
+
+### TLS for new network experiments
+
+The interactive remote/federated workflow presents TLS before plain TCP.
+For a server, leaving certificate/key paths blank enables automatic generation
+of a short-lived self-signed research certificate with OpenSSL.
+
+The proxy remains a byte-stream forwarder and does not terminate TLS, so the
+topology remains:
+
+```text
+client == TLS ==> proxy == opaque TLS bytes ==> real server
+```
+
+TLS 1.2 is the default minimum; TLS 1.3 can be selected.
 
 
 ## Capture-interface offload control (v0.8.4)

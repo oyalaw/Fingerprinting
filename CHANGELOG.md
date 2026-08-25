@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.5
+
+Integrated corrections derived from the two-client federated experiment.
+
+- Split client `Upload` from synchronous post-upload waiting. The network-send
+  interval remains `Upload`; round-release waiting is now `Idle` with
+  `reason=synchronous_round_wait`.
+- Added `federated_upload_transaction` records with transfer, synchronization
+  wait, and total transaction timing.
+- Server Upload ground truth now marks `boundary=receive_complete` before model
+  deserialization and logs coordinator wait separately.
+- Added UTC epoch and monotonic timestamps to every ground-truth event.
+- Federated clients now log `network_registration` with actual client ID and
+  local source IP.
+- Proxy fallback aliases are neutral `trace_###` names rather than names that
+  can be mistaken for federated client IDs.
+- Dataset preparation automatically resolves proxy trace IDs to actual FL
+  client IDs by joining proxy-manifest client IPs with client-side
+  network-registration ground truth.
+- Added global alignment metadata to per-client features while keeping those
+  fields outside the predictor matrix.
+- Resource telemetry now records actual interval, sampling duration, and
+  sampling overrun.
+- `nvidia-smi` is probed once and disabled when no usable GPU is present,
+  preventing repeated failed GPU queries from stretching CPU-only sampling.
+- Interactive network experiments now offer TLS first.
+- Added automatic OpenSSL-based self-signed research certificates for TLS
+  servers when no certificate/key is supplied.
+- Enforced a configurable TLS minimum version, defaulting to TLS 1.2.
+
+
 
 ## 0.8.4
 

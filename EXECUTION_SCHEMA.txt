@@ -69,3 +69,15 @@ federated:
 
 Training currently requires runtime=native. Artifact runtimes such as ONNX
 Runtime, TensorRT, and TFLite remain inference runtimes in v0.6.
+
+
+Federated phase semantics (v0.8.5)
+---------------------------------
+Network-relevant client ground truth uses:
+
+Download -> Training -> Upload -> Idle
+
+Upload covers only the model-send interval. Waiting after the send for the
+synchronous server round release is Idle with reason=synchronous_round_wait.
+The separate federated_upload_transaction event records total send-plus-wait
+timing for diagnostics.
