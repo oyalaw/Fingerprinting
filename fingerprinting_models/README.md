@@ -21,11 +21,16 @@ A bundle may still be used as an engineering/pipeline smoke test, but
 it should not be presented as a publication-quality classifier until
 independent-run evaluation is available.
 
+## v0.8.7 note
 
-## v0.8.7 Fisher outputs
+Model bundle schema 1.1 uses stage-specific top-10 Fisher-score feature
+selection. Bundles trained by v0.8.6 schema 1.0 should be retrained with:
 
-Every trained bundle now includes `fisher_scores.csv`, and `metadata.json`
-contains the complete stage-specific Fisher ranking and selected feature list.
+```bash
+python prepare_fingerprinting_dataset.py
+python train_fingerprinting_models.py
+```
 
-Model bundle schema 1.1 is not compatible with v0.8.6 schema-1.0 bundles.
-Retrain models after upgrading.
+The trainer writes `hierarchical_metrics.csv` with grouped Accuracy,
+Balanced Accuracy, Macro Precision, Macro Recall, Macro F1, and Log Loss when
+there are enough independent experiment groups per class.

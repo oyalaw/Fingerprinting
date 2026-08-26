@@ -216,26 +216,57 @@ def interactive_configure(
     runtime = choose("Select execution runtime", runtime_options)
     config["ai"]["runtime"] = runtime
 
+    executable_families = registry.families_for_framework(framework, runtime)
+    catalog_only_families = sorted(
+        set(registry.families()) - set(executable_families)
+    )
+    if runtime == "native" and catalog_only_families:
+        print(
+            "Catalog-only families not selectable for native execution: "
+            + ", ".join(catalog_only_families)
+            + ". Use `python main.py models --framework "
+            + framework
+            + "` to inspect their status."
+        )
     family = choose(
         "Select model family",
-        registry.families_for_framework(framework, runtime),
+        executable_families,
     )
     config["ai"]["family"] = family
 
+    executable_architectures = registry.architectures_for(
+        framework, family, runtime
+    )
+    catalog_architectures = registry.architectures_for_family(family)
+    catalog_only_architectures = sorted(
+        set(catalog_architectures) - set(executable_architectures)
+    )
+    if runtime == "native" and catalog_only_architectures:
+        print(
+            f"Catalog-only {family} architectures not selectable natively: "
+            + ", ".join(catalog_only_architectures)
+        )
     architecture = choose(
         "Select architecture",
-        registry.architectures_for(framework, family, runtime),
+        executable_architectures,
     )
     config["ai"]["architecture"] = architecture
 
+    executable_variants = registry.variants_for(
+        framework, family, architecture, runtime
+    )
+    catalog_variants = registry.variants_for_architecture(architecture)
+    catalog_only_variants = sorted(
+        set(catalog_variants) - set(executable_variants)
+    )
+    if runtime == "native" and catalog_only_variants:
+        print(
+            f"Catalog-only {architecture} variants not selectable natively: "
+            + ", ".join(catalog_only_variants)
+        )
     variant = choose(
         "Select architecture variant",
-        registry.variants_for(
-            framework,
-            family,
-            architecture,
-            runtime,
-        ),
+        executable_variants,
     )
     config["ai"]["variant"] = variant
 
@@ -277,10 +308,16 @@ def interactive_configure(
     if config["device"]["label"] == "custom":
         config["device"]["label"] = ask_text("Custom device label", "custom")
 
-    config["device"]["operating_system"] = ask_text(
-        "Operating system label",
-        "unknown",
+    operating_system = choose(
+        "Select operating system",
+        registry.operating_systems_for_device(config["device"]["label"]),
     )
+    if operating_system == "custom":
+        operating_system = ask_text(
+            "Custom operating system label",
+            "custom",
+        )
+    config["device"]["operating_system"] = operating_system
 
     default_host = "0.0.0.0" if role == "server" else "127.0.0.1"
     if deployment != "local":
@@ -365,7 +402,20 @@ def interactive_configure(
                         "server_hostname"
                     ] = hostname or None
 
-    config["ai"]["input_size"] = ask_int("Image input size", 224)
+    default_input_size = (
+        32
+        if family in {"autoencoder", "mlp"}
+        and application in {
+            "image_classification",
+            "reconstruction",
+            "anomaly_detection",
+        }
+        else 224
+    )
+    config["ai"]["input_size"] = ask_int(
+        "Image input size",
+        default_input_size,
+    )
     config["execution"]["batch_size"] = ask_int("Batch size", 1)
 
     if task == "inference":
@@ -799,6 +849,24 @@ def _print_artifacts(result: Dict[str, Any]) -> None:
             )
 
 
+
+def print_model_catalog(framework: str) -> None:
+    rows = registry.model_catalog_rows(framework)
+    header = (
+        f"{'FAMILY':16} {'ARCHITECTURE':28} {'VARIANT':36} "
+        f"{'EXECUTION':14} {'OPTIONAL DEPENDENCY'}"
+    )
+    print(header)
+    print("=" * len(header))
+    for row in rows:
+        execution = "native" if row["native"] else "artifact-only"
+        dependencies = ",".join(row["optional_dependencies"]) or "-"
+        print(
+            f"{str(row['family']):16} {str(row['architecture']):28} "
+            f"{str(row['variant']):36} {execution:14} {dependencies}"
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="AI workload fingerprinting experiment controller"
@@ -931,6 +999,16 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--burst-gap-sec", type=float, default=0.05)
     extract.add_argument("--idle-threshold-sec", type=float, default=0.5)
     extract.add_argument("--window-seconds", type=float, default=None)
+
+    models_parser = subparsers.add_parser(
+        "models",
+        help="Show the complete family/architecture/variant catalog and execution status",
+    )
+    models_parser.add_argument(
+        "--framework",
+        choices=registry.frameworks(),
+        default="pytorch",
+    )
 
     datasets_parser = subparsers.add_parser(
         "datasets",
@@ -1080,6 +1158,10 @@ def main() -> None:
                 window_seconds=args.window_seconds,
             )
             _print_artifacts(result)
+            return
+
+        if args.command == "models":
+            print_model_catalog(args.framework)
             return
 
         if args.command == "datasets":

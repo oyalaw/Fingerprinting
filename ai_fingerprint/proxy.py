@@ -81,6 +81,10 @@ DEFAULT_PROXY_CONFIG: Dict[str, Any] = {
         "window_seconds": 5.0,
         # Shared scales for real-time and end-of-run feature extraction.
         "window_sizes_sec": [0.5, 1.0, 2.0, 5.0],
+        # Prevent an old persisted 5-second-only config from silently
+        # defeating the multiscale real-time experiment. Set true only when
+        # a deliberate single-scale study is intended.
+        "allow_single_scale": False,
     },
     "architecture_inference": {
         "enabled": True,
@@ -254,6 +258,20 @@ def validate_proxy_config(config: Dict[str, Any]) -> None:
                 )
 
         inference = config.get("architecture_inference", {}) or {}
+        if (
+            bool(inference.get("enabled", False))
+            and bool(inference.get("realtime_enabled", True))
+            and len(window_sizes) < 2
+            and not bool(capture.get("allow_single_scale", False))
+        ):
+            raise ProxyError(
+                "Real-time architecture fingerprinting requires multiscale "
+                "capture windows by default. Use capture.window_sizes_sec="
+                "[0.5, 1.0, 2.0, 5.0], or set "
+                "capture.allow_single_scale=true for an intentional "
+                "single-scale experiment."
+            )
+
         if bool(inference.get("enabled", False)):
             modes = inference.get(
                 "feature_modes",

@@ -1,5 +1,5 @@
 AI Fingerprinting Model Hierarchy Schema
-Version 1.0
+Version 1.1
 
 Inference hierarchy:
 family -> architecture -> variant
@@ -33,3 +33,20 @@ framework
 runtime
 dataset
 device
+
+
+v0.8.7 native-training coverage highlights:
+cnn -> resnet/mobilenet/efficientnet -> multiple variants
+rnn -> lstm/gru -> multiple variants
+transformer -> tiny_transformer -> 2/4/6-layer
+transformer -> bert -> tiny/mini/small/base/large (PyTorch + transformers)
+transformer -> distilbert -> base (PyTorch + transformers)
+transformer -> vit -> B/16, B/32, L/16 (PyTorch torchvision)
+autoencoder -> dense_autoencoder -> 2/3/5-layer
+autoencoder -> convolutional_autoencoder -> 2/4/6-layer
+autoencoder -> variational_autoencoder -> FC/Conv/Beta-VAE
+mlp -> feedforward_mlp -> 2/4/8-layer
+
+Catalog-only entries remain explicitly marked artifact-only where the generic
+training loop does not implement the task correctly (for example GAN,
+diffusion, object detection, and current GNN/state-space entries).

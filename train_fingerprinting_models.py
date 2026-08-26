@@ -6,9 +6,6 @@ from pathlib import Path
 
 from ai_fingerprint.architecture_models import (
     ArchitectureModelError,
-    DEFAULT_FISHER_MIN_FEATURES,
-    DEFAULT_FISHER_MIN_SCORE,
-    DEFAULT_FISHER_TOP_K,
     model_directory_name,
     train_hierarchy_bundle,
 )
@@ -38,34 +35,6 @@ def _find_dataset(root: Path):
     return None, None
 
 
-def _print_stage_selection(result):
-    stages = result["stages"]
-
-    def show(label, stage):
-        if stage.get("kind") != "classifier":
-            print(
-                f"    {label}: {stage.get('kind')} "
-                f"classes={stage.get('classes', [])}"
-            )
-            return
-        selected = stage.get("feature_columns", [])
-        ranking = stage.get("fisher_ranking", [])
-        top = ", ".join(
-            f"{item['feature']}={float(item['fisher_score']):.3g}"
-            for item in ranking[:5]
-        )
-        print(
-            f"    {label}: selected={len(selected)} "
-            f"top Fisher [{top}]"
-        )
-
-    show("family", stages["family"])
-    for parent, stage in stages["architecture_by_family"].items():
-        show(f"architecture|{parent}", stage)
-    for parent, stage in stages["variant_by_parent"].items():
-        show(f"variant|{parent}", stage)
-
-
 def _window_sizes(x_path: Path):
     values = set()
     with x_path.open(newline="", encoding="utf-8") as handle:
@@ -90,6 +59,66 @@ def _window_sizes(x_path: Path):
     return sorted(values)
 
 
+
+def _metric_rows(trained):
+    rows = []
+    for result in trained:
+        common = {
+            "feature_mode": result.get("feature_mode"),
+            "mode": result.get("mode"),
+            "window_size_sec": result.get("window_size_sec"),
+        }
+        stages = result.get("stages", {})
+        entries = [("family", "all", stages.get("family", {}))]
+        entries.extend(
+            ("architecture", parent, stage)
+            for parent, stage in stages.get("architecture_by_family", {}).items()
+        )
+        entries.extend(
+            ("variant", parent, stage)
+            for parent, stage in stages.get("variant_by_parent", {}).items()
+        )
+        for level, parent, stage in entries:
+            evaluation = stage.get("evaluation", {}) or {}
+            rows.append({
+                **common,
+                "level": level,
+                "parent": parent,
+                "kind": stage.get("kind"),
+                "status": evaluation.get("status", stage.get("kind")),
+                "sample_count": stage.get("sample_count"),
+                "accuracy_mean": evaluation.get("accuracy_mean"),
+                "accuracy_std": evaluation.get("accuracy_std"),
+                "balanced_accuracy_mean": evaluation.get("balanced_accuracy_mean"),
+                "balanced_accuracy_std": evaluation.get("balanced_accuracy_std"),
+                "precision_mean": evaluation.get("macro_precision_mean"),
+                "precision_std": evaluation.get("macro_precision_std"),
+                "recall_mean": evaluation.get("macro_recall_mean"),
+                "recall_std": evaluation.get("macro_recall_std"),
+                "f1_mean": evaluation.get("macro_f1_mean"),
+                "f1_std": evaluation.get("macro_f1_std"),
+                "loss_mean": evaluation.get("log_loss_mean"),
+                "loss_std": evaluation.get("log_loss_std"),
+            })
+    return rows
+
+
+def _write_metrics_csv(model_root: Path, trained):
+    rows = _metric_rows(trained)
+    path = model_root / "hierarchical_metrics.csv"
+    fieldnames = [
+        "feature_mode", "mode", "window_size_sec", "level", "parent",
+        "kind", "status", "sample_count", "accuracy_mean", "accuracy_std",
+        "balanced_accuracy_mean", "balanced_accuracy_std",
+        "precision_mean", "precision_std", "recall_mean", "recall_std",
+        "f1_mean", "f1_std", "loss_mean", "loss_std",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
 def main() -> None:
     root = Path(".").resolve()
     x_path, y_path = _find_dataset(root)
@@ -105,12 +134,6 @@ def main() -> None:
     print(f"X: {x_path}")
     print(f"Y: {y_path}")
     print(f"Models: {model_root}")
-    print(
-        "Feature selection: class-balanced Fisher, "
-        f"top_k={DEFAULT_FISHER_TOP_K}, "
-        f"min_score={DEFAULT_FISHER_MIN_SCORE:g}, "
-        f"min_features={DEFAULT_FISHER_MIN_FEATURES}"
-    )
 
     window_sizes = _window_sizes(x_path)
     print(
@@ -158,11 +181,6 @@ def main() -> None:
                     f"samples={result['sample_count']} "
                     f"experiments={result['experiment_count']}"
                 )
-                _print_stage_selection(result)
-                print(
-                    f"    Fisher CSV: "
-                    f"{result['fisher_scores_csv']}"
-                )
             except ArchitectureModelError as exc:
                 failures.append(
                     {
@@ -177,21 +195,16 @@ def main() -> None:
                     f"{window_size}: {exc}"
                 )
 
+    metrics_path = _write_metrics_csv(model_root, trained)
+    print(f"Hierarchical metrics: {metrics_path}")
+
     summary = {
         "x_proxy_csv": str(x_path),
         "y_ground_truth_csv": str(y_path),
         "model_root": str(model_root),
+        "hierarchical_metrics_csv": str(metrics_path),
+        "fisher_top_k": 10,
         "window_sizes_sec": window_sizes,
-        "feature_selection": {
-            "method": "class_balanced_fisher",
-            "stage_specific": True,
-            "top_k": DEFAULT_FISHER_TOP_K,
-            "min_score": DEFAULT_FISHER_MIN_SCORE,
-            "min_features": DEFAULT_FISHER_MIN_FEATURES,
-            "grouped_evaluation_rule": (
-                "Fisher selection is re-fitted inside each training fold."
-            ),
-        },
         "trained": trained,
         "failures": failures,
         "important_evaluation_rule": (

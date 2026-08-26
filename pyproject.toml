@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-fingerprint-experiment"
-version = "0.8.7"
-description = "AI workload fingerprinting with proxy-only multiscale features, progressive real-time inference, complete-trace inference, and federated experiments"
+version = "0.8.8"
+description = "AI workload fingerprinting with corrected hierarchical model taxonomy, Fisher-selected hierarchical inference, multiscale proxy features, and federated experiments"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
@@ -18,3 +18,13 @@ dependencies = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[project.optional-dependencies]
+pytorch = [
+  "torch",
+  "torchvision",
+  "transformers>=4.42"
+]
+tensorflow = ["tensorflow"]
+datasets = ["datasets"]
+dev = ["pytest"]

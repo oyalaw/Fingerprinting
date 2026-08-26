@@ -221,23 +221,3 @@ distributions, and burst morphology retain architecture information.
 Windows are correlated observations, not independent experiments. All reported
 generalization metrics must split by independent experiment/run groups. Never
 randomly place windows from the same run in both training and test sets.
-
-
-23. Stage-specific feature selection
-------------------------------------
-Family, architecture, and variant classifiers may use different predictor
-subsets. v0.8.7 selects each subset independently using class-balanced Fisher
-scores.
-
-24. Fisher-selection leakage control
-------------------------------------
-When evaluating generalization with grouped cross-validation, Fisher ranking
-must be fitted from the training experiments inside each fold. A held-out
-experiment must not influence the selected feature set.
-
-25. Fisher score is not robustness evidence
---------------------------------------------
-A high Fisher score establishes univariate separability in the observed
-conditions. It does not establish invariance to bandwidth, latency, loss,
-jitter, congestion, device capability, or runtime changes. Those claims require
-explicit unseen-condition evaluation.

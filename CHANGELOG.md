@@ -1,35 +1,40 @@
 # Changelog
 
+## 0.8.8
+
+- Replaced free-text OS entry in the interactive client/server workflow with a numbered operating-system menu.
+- Added canonical operating-system labels and device-aware OS choices in the registry.
+- Kept `custom` as an explicit fallback for unsupported research platforms.
+- Preserved hardware/OS separation so labels such as `ubuntu` cannot accidentally be used as the device identity.
+
 ## 0.8.7
 
-Added stage-specific Fisher-score feature selection for hierarchical
-fingerprinting.
+Corrected hierarchical model availability and native execution. Transformer
+now includes Tiny Transformer 2/4/6-layer variants, PyTorch BERT/DistilBERT,
+and PyTorch ViT. Autoencoder now exposes Dense, Convolutional, and Variational
+architectures with multiple native variants. MLP 2/4/8-layer variants are now
+native in PyTorch and TensorFlow.
 
-- Family, architecture, and variant stages no longer have to use the same
-  predictor subset.
-- Added class-balanced multiclass Fisher scores so classes with longer traces
-  or more active windows do not dominate the ranking.
-- Added automatic top-k Fisher selection with configurable minimum score and
-  minimum retained feature count.
-- Added Fisher selection independently inside each hierarchy stage:
-  - Family over all represented families.
-  - Architecture conditioned on the predicted/ground-truth family.
-  - Variant conditioned on family + architecture.
-- Added leakage-safe grouped evaluation: Fisher feature selection is fitted
-  again inside every training fold and never sees the held-out experiment
-  during cross-validation.
-- Added `fisher_scores.csv` to every trained model bundle directory.
-- Added selected feature lists and full Fisher rankings to `metadata.json`.
-- Added fold-level feature-selection stability to grouped evaluation metadata.
-- Predictions now construct a different feature vector for each hierarchy
-  stage using that stage's selected predictors.
-- Constant hierarchy stages (only one represented class) explicitly skip
-  Fisher selection rather than pretending to learn discrimination.
-- The no-argument model trainer prints the top Fisher features for family,
-  each architecture parent, and each variant parent.
-- Model bundle schema advanced from 1.0 to 1.1; retrain v0.8.6 bundles before
-  using them with v0.8.7.
+Added an explicit model catalog command (`python main.py models`) so
+artifact-only families/architectures are visible rather than silently hidden
+from native-training menus.
 
+Completed legacy concrete-model migration for all registered variants, added
+Dell desktop/laptop hardware labels, and reject OS names such as `ubuntu` when
+used incorrectly as `device.label`.
+
+Added stage-specific top-10 multiclass Fisher-score feature selection to the
+hierarchical Family -> Architecture -> Variant classifier. Grouped evaluation
+now reports accuracy, balanced accuracy, macro precision, macro recall, macro
+F1, and log loss. Training writes `hierarchical_metrics.csv`.
+
+Added a fail-closed multiscale guard so real-time architecture inference does
+not silently fall back to a persisted 5-second-only configuration.
+
+Validation: 77 automated tests pass. New PyTorch training smoke tests cover
+Tiny Transformer 4-layer, convolutional Autoencoder 6-layer, and MLP 4-layer;
+additional manual smoke checks exercised all new built-in Tiny Transformer,
+Autoencoder/VAE, MLP variants and ViT-B/16 and ViT-B/32.
 
 ## 0.8.6
 

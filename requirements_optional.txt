@@ -1,5 +1,6 @@
 torch
 torchvision
+transformers>=4.42
 tensorflow
 onnxruntime
 datasets

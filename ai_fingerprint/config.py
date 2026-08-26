@@ -204,6 +204,17 @@ def validate_config(config: Dict[str, Any]) -> None:
     if framework not in registry.FRAMEWORKS:
         raise ConfigError(f"Unsupported framework: {framework}")
 
+    device_label = str(config.get("device", {}).get("label", "")).strip().lower()
+    if device_label in {
+        "ubuntu", "linux", "windows", "windows_10", "windows_11",
+        "macos", "darwin",
+    }:
+        raise ConfigError(
+            "device.label must describe hardware, not the operating system. "
+            "For example use device.label=dell_desktop and "
+            "device.operating_system=ubuntu."
+        )
+
     family = config["ai"]["family"]
     architecture = config["ai"]["architecture"]
     variant = config["ai"].get("variant")

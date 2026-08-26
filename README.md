@@ -1,6 +1,6 @@
 # AI Fingerprinting Experiment Codebase
 
-Version 0.8.6 enforces attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
+Version 0.8.8 preserves attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
 
 The same repository supports client execution, server execution, proxy capture, real dataset loading, and ground truth logging.
 
@@ -16,45 +16,49 @@ The attacker facing fingerprinting pipeline uses only network observable informa
 
 
 
-## Stage-specific Fisher selection (v0.8.7)
+## Interactive operating-system selection (v0.8.8)
 
-The hierarchical classifiers no longer use one fixed predictor set at every
-level. v0.8.7 computes a class-balanced Fisher ranking separately for:
+The no-argument client/server workflow now treats hardware and operating
+system as two independent controlled labels. After selecting the hardware
+device, the user selects the operating system from a numbered menu. Device-
+appropriate choices are shown first (for example, Dell systems offer Ubuntu
+and Windows choices, while Jetson systems default to Ubuntu-oriented options).
+A `custom` OS entry remains available only as an explicit fallback.
+
+This prevents routine free-text entries such as `device=ubuntu`, keeps OS
+labels canonical across machines, and improves device/OS stratification in
+later fingerprinting evaluation.
+
+## Hierarchy corrections (v0.8.7)
+
+Version 0.8.7 corrects the native-training hierarchy so the menu no longer
+collapses Transformer and Autoencoder to one deterministic child. PyTorch
+training now exposes Tiny Transformer 2/4/6-layer variants, BERT and
+DistilBERT configurations, torchvision ViT variants, three Autoencoder
+architectures with multiple variants, and MLP depth variants. TensorFlow
+receives the Tiny Transformer, Autoencoder, VAE, and MLP expansions.
+
+Run the complete catalog audit at any time with:
 
 ```text
-Family
-Architecture conditioned on Family
-Variant conditioned on Family + Architecture
+python main.py models --framework pytorch
 ```
 
-Each trained stage stores its own `feature_columns`. This permits, for example,
-packet-size entropy and IAT variability to be important for family separation
-while directional packet-size statistics or transfer occupancy dominate a
-CNN architecture decision.
+The catalog explicitly marks models as `native` or `artifact-only` instead of
+silently implying that every taxonomy entry can be trained by the generic
+training loop. BERT/DistilBERT native PyTorch execution requires the optional
+`transformers` package.
 
-Both `full` and `size_normalized` model families use this procedure.
+Hierarchical model training now applies stage-specific top-10 multiclass
+Fisher-score feature selection before Random Forest fitting and reports
+accuracy, balanced accuracy, macro precision, macro recall, macro F1, and log
+loss under independent-experiment grouped cross-validation when enough runs
+exist. A consolidated `fingerprinting_models/hierarchical_metrics.csv` is
+written by `train_fingerprinting_models.py`.
 
-During grouped cross-validation the Fisher ranking is re-fitted only from the
-training experiments in each fold. The held-out run is never used for feature
-selection.
-
-Every model directory now contains:
-
-```text
-bundle.pkl
-metadata.json
-fisher_scores.csv
-```
-
-Run the normal no-argument trainer:
-
-```bash
-python3 prepare_fingerprinting_dataset.py
-python3 train_fingerprinting_models.py
-```
-
-See `V0_8_7_FISHER_FEATURE_SELECTION.md` for the scoring formula, defaults,
-leakage-control rule, and reporting guidance.
+The proxy also rejects an accidental 5-second-only real-time configuration
+unless `capture.allow_single_scale=true` is explicitly set. The standard
+profile remains 0.5/1/2/5 seconds.
 
 
 ## Dual architecture inference (v0.8.6)
