@@ -4,6 +4,7 @@ from .analysis import (
     capture_quality_diagnostics,
     extract_capture_artifacts,
     extract_feature_rows,
+    extract_multiscale_feature_rows,
     read_packet_sequence_csv,
     repair_packet_sequence_artifacts,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "capture_quality_diagnostics",
     "extract_capture_artifacts",
     "extract_feature_rows",
+    "extract_multiscale_feature_rows",
     "read_packet_sequence_csv",
     "repair_packet_sequence_artifacts",
 ]

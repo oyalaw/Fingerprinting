@@ -1,6 +1,6 @@
 experiment:
   experiment_id: EXP_PROXY_001
-  output_dir: proxy_results
+  output_dir: experiments/results
   existing_output_policy: error
 
 proxy:
@@ -54,6 +54,17 @@ capture:
   burst_gap_sec: 0.05
   idle_threshold_sec: 0.5
 
-  # Writes one overall row plus 5-second feature windows for each client.
-  # Set to null to generate overall-only features.
+  # v0.8.6 multi-scale windows. The largest scale is also kept in the
+  # legacy window_seconds field for backwards compatibility.
   window_seconds: 5.0
+  window_sizes_sec: [0.5, 1.0, 2.0, 5.0]
+
+architecture_inference:
+  enabled: true
+  realtime_enabled: true
+  final_enabled: true
+  realtime_required: true
+  model_root: fingerprinting_models
+  feature_modes: [full, size_normalized]
+  confidence_threshold: 0.90
+  stable_windows: 3

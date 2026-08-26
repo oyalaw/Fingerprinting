@@ -19,6 +19,10 @@ from .capture import (
     start_capture_process,
     stop_capture_process,
 )
+from .live_inference import (
+    LiveArchitectureMonitor,
+    run_final_architecture_inference,
+)
 from .experiment_output import enforce_experiment_output_policy
 from .offload import CaptureOffloadError, CaptureOffloadManager
 from .traffic import extract_capture_artifacts
@@ -31,7 +35,7 @@ class ProxyError(RuntimeError):
 DEFAULT_PROXY_CONFIG: Dict[str, Any] = {
     "experiment": {
         "experiment_id": "auto",
-        "output_dir": "proxy_results",
+        "output_dir": "experiments/results",
         "existing_output_policy": "error",
     },
     "proxy": {
@@ -73,8 +77,20 @@ DEFAULT_PROXY_CONFIG: Dict[str, Any] = {
         "extract_after": True,
         "burst_gap_sec": 0.05,
         "idle_threshold_sec": 0.5,
-        # Keep an overall row and additionally produce 5-second windows.
+        # Legacy single-scale setting retained for compatibility.
         "window_seconds": 5.0,
+        # Shared scales for real-time and end-of-run feature extraction.
+        "window_sizes_sec": [0.5, 1.0, 2.0, 5.0],
+    },
+    "architecture_inference": {
+        "enabled": True,
+        "realtime_enabled": True,
+        "final_enabled": True,
+        "realtime_required": True,
+        "model_root": "fingerprinting_models",
+        "feature_modes": ["full", "size_normalized"],
+        "confidence_threshold": 0.90,
+        "stable_windows": 3,
     },
 }
 
@@ -228,6 +244,47 @@ def validate_proxy_config(config: Dict[str, Any]) -> None:
                 "capture.window_seconds must be positive or null"
             )
 
+        window_sizes = capture.get("window_sizes_sec", []) or []
+        if isinstance(window_sizes, (int, float, str)):
+            window_sizes = [window_sizes]
+        for value in window_sizes:
+            if float(value) <= 0:
+                raise ProxyError(
+                    "capture.window_sizes_sec values must be positive"
+                )
+
+        inference = config.get("architecture_inference", {}) or {}
+        if bool(inference.get("enabled", False)):
+            modes = inference.get(
+                "feature_modes",
+                ["full", "size_normalized"],
+            )
+            if not isinstance(modes, list) or not modes:
+                raise ProxyError(
+                    "architecture_inference.feature_modes must be a "
+                    "non-empty list"
+                )
+            unknown_modes = sorted(
+                set(modes) - {"full", "size_normalized"}
+            )
+            if unknown_modes:
+                raise ProxyError(
+                    "Unknown architecture feature modes: "
+                    f"{unknown_modes}"
+                )
+            threshold = float(
+                inference.get("confidence_threshold", 0.90)
+            )
+            if not 0.0 < threshold <= 1.0:
+                raise ProxyError(
+                    "architecture_inference.confidence_threshold must "
+                    "be in (0, 1]"
+                )
+            if int(inference.get("stable_windows", 3)) < 1:
+                raise ProxyError(
+                    "architecture_inference.stable_windows must be >= 1"
+                )
+
         offload_cfg = capture.get("offload_management", {}) or {}
         if not isinstance(offload_cfg, dict):
             raise ProxyError(
@@ -363,6 +420,10 @@ class BlindTCPProxy:
         self._threads: list[threading.Thread] = []
         self._capture_process = None
         self._capture_preflight: Dict[str, Any] = {}
+        self._live_architecture_monitor: Optional[
+            LiveArchitectureMonitor
+        ] = None
+        self._live_architecture_summary: Dict[str, Any] = {}
         self._offload_manager: Optional[
             CaptureOffloadManager
         ] = None
@@ -501,6 +562,10 @@ class BlindTCPProxy:
                         "snaplen_bytes", 256
                     ),
                 )
+                self._start_live_architecture_monitor(
+                    interface=interface,
+                    client_ips=client_ips,
+                )
 
             listener = self._create_listener()
             address = listener.getsockname()
@@ -560,11 +625,123 @@ class BlindTCPProxy:
             for thread in list(self._threads):
                 thread.join(timeout=2.0)
 
+            self._stop_live_architecture_monitor()
             capture_result = self._stop_and_extract_capture()
+            if self._live_architecture_summary:
+                capture_result[
+                    "live_architecture_inference"
+                ] = self._live_architecture_summary
             self._restore_capture_offloads()
 
         summary = self._write_summary(capture_result)
         return summary
+
+    def _start_live_architecture_monitor(
+        self,
+        *,
+        interface: str,
+        client_ips: list[str],
+    ) -> None:
+        inference = self.config.get(
+            "architecture_inference", {}
+        ) or {}
+        if not (
+            bool(inference.get("enabled", False))
+            and bool(inference.get("realtime_enabled", True))
+        ):
+            return
+
+        capture = self.config["capture"]
+        window_sizes = (
+            capture.get("window_sizes_sec")
+            or [capture.get("window_seconds", 5.0)]
+        )
+
+        try:
+            monitor = LiveArchitectureMonitor(
+                experiment_id=self.experiment_id,
+                interface=interface,
+                client_ips=client_ips,
+                client_aliases=(
+                    capture.get("client_aliases", {}) or {}
+                ),
+                port=int(
+                    self.config["proxy"]["listen_port"]
+                ),
+                output_dir=self.output_dir,
+                window_sizes_sec=window_sizes,
+                burst_gap_sec=float(
+                    capture.get("burst_gap_sec", 0.05)
+                ),
+                idle_threshold_sec=float(
+                    capture.get(
+                        "idle_threshold_sec", 0.5
+                    )
+                ),
+                model_root=str(
+                    inference.get(
+                        "model_root",
+                        "fingerprinting_models",
+                    )
+                ),
+                snaplen_bytes=capture.get(
+                    "snaplen_bytes", 256
+                ),
+                feature_modes=tuple(
+                    inference.get(
+                        "feature_modes",
+                        ["full", "size_normalized"],
+                    )
+                ),
+                confidence_threshold=float(
+                    inference.get(
+                        "confidence_threshold", 0.90
+                    )
+                ),
+                stable_windows=int(
+                    inference.get("stable_windows", 3)
+                ),
+            )
+            monitor.start()
+            self._live_architecture_monitor = monitor
+
+            if monitor.model_count:
+                print(
+                    "[proxy] real-time architecture inference ACTIVE: "
+                    f"{monitor.model_count} model bundles loaded"
+                )
+            else:
+                print(
+                    "[proxy] real-time architecture feature collection "
+                    "ACTIVE; no trained bundles found yet"
+                )
+        except Exception as exc:
+            if bool(
+                inference.get("realtime_required", True)
+            ):
+                raise ProxyError(
+                    "Real-time architecture monitor failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            print(
+                "[proxy] WARNING: real-time architecture monitor "
+                f"unavailable: {type(exc).__name__}: {exc}"
+            )
+
+    def _stop_live_architecture_monitor(self) -> Dict[str, Any]:
+        monitor = self._live_architecture_monitor
+        if monitor is None:
+            return self._live_architecture_summary
+        try:
+            self._live_architecture_summary = monitor.stop()
+        except Exception as exc:
+            self._live_architecture_summary = {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        finally:
+            self._live_architecture_monitor = None
+        return self._live_architecture_summary
 
     def _restore_capture_offloads(self) -> None:
         manager = self._offload_manager
@@ -824,8 +1001,43 @@ class BlindTCPProxy:
                 window_seconds=capture.get(
                     "window_seconds"
                 ),
+                window_sizes_sec=(
+                    capture.get("window_sizes_sec") or None
+                ),
             )
             result.update(artifacts)
+
+            inference = self.config.get(
+                "architecture_inference", {}
+            ) or {}
+            if (
+                bool(inference.get("enabled", False))
+                and bool(
+                    inference.get("final_enabled", True)
+                )
+                and artifacts.get("per_client_artifacts")
+            ):
+                result[
+                    "final_architecture_inference"
+                ] = run_final_architecture_inference(
+                    experiment_id=self.experiment_id,
+                    per_client_artifacts=artifacts[
+                        "per_client_artifacts"
+                    ],
+                    output_dir=self.output_dir,
+                    model_root=str(
+                        inference.get(
+                            "model_root",
+                            "fingerprinting_models",
+                        )
+                    ),
+                    feature_modes=tuple(
+                        inference.get(
+                            "feature_modes",
+                            ["full", "size_normalized"],
+                        )
+                    ),
+                )
         except Exception as exc:
             result["capture_error"] = (
                 f"{type(exc).__name__}: {exc}"

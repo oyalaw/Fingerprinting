@@ -44,6 +44,7 @@ PROXY_FEATURE_METADATA_FIELDS = [
     "window_index",
     "window_start_sec",
     "window_end_sec",
+    "window_size_sec",
     "trace_start_offset_sec",
     "trace_end_offset_sec",
     "window_start_global_sec",

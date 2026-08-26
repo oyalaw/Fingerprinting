@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.8.7
+
+Added stage-specific Fisher-score feature selection for hierarchical
+fingerprinting.
+
+- Family, architecture, and variant stages no longer have to use the same
+  predictor subset.
+- Added class-balanced multiclass Fisher scores so classes with longer traces
+  or more active windows do not dominate the ranking.
+- Added automatic top-k Fisher selection with configurable minimum score and
+  minimum retained feature count.
+- Added Fisher selection independently inside each hierarchy stage:
+  - Family over all represented families.
+  - Architecture conditioned on the predicted/ground-truth family.
+  - Variant conditioned on family + architecture.
+- Added leakage-safe grouped evaluation: Fisher feature selection is fitted
+  again inside every training fold and never sees the held-out experiment
+  during cross-validation.
+- Added `fisher_scores.csv` to every trained model bundle directory.
+- Added selected feature lists and full Fisher rankings to `metadata.json`.
+- Added fold-level feature-selection stability to grouped evaluation metadata.
+- Predictions now construct a different feature vector for each hierarchy
+  stage using that stage's selected predictors.
+- Constant hierarchy stages (only one represented class) explicitly skip
+  Fisher selection rather than pretending to learn discrimination.
+- The no-argument model trainer prints the top Fisher features for family,
+  each architecture parent, and each variant parent.
+- Model bundle schema advanced from 1.0 to 1.1; retrain v0.8.6 bundles before
+  using them with v0.8.7.
+
+
+## 0.8.6
+
+Added progressive real-time and complete-trace hierarchical fingerprinting.
+
+- Added multi-scale 0.5/1/2/5-second proxy feature extraction.
+- Reworked window extraction to linear-time packet binning for million-packet
+  captures.
+- Added a live client-facing `tshark` metadata monitor that uses only
+  proxy-observable packet information and does not terminate TLS.
+- Added stable-confidence real-time Family -> Architecture -> Variant
+  predictions.
+- Added complete-trace final predictions when the archival PCAP is extracted.
+- Added `full` and `size_normalized` model configurations.
+- Added Random-Forest hierarchy bundles with probability outputs and top
+  feature importance metadata.
+- Added group-aware evaluation by experiment ID and explicit
+  `insufficient_independent_runs` status.
+- Added no-argument `train_fingerprinting_models.py`.
+- Added backward compatibility for legacy 5-second feature files.
+- Added `window_size_sec` as non-predictor metadata.
+- Added strict federated client/server experiment-ID matching.
+- Interactive runs now require an explicit coordinated experiment ID.
+- Proxy/client/server default output paths are aligned to
+  `experiments/results`.
+
+
 ## 0.8.5
 
 Integrated corrections derived from the two-client federated experiment.

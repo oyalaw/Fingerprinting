@@ -1,6 +1,6 @@
 # AI Fingerprinting Experiment Codebase
 
-Version 0.8.5 enforces attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
+Version 0.8.6 enforces attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
 
 The same repository supports client execution, server execution, proxy capture, real dataset loading, and ground truth logging.
 
@@ -14,6 +14,187 @@ The attacker facing fingerprinting pipeline uses only network observable informa
 
 
 
+
+
+## Stage-specific Fisher selection (v0.8.7)
+
+The hierarchical classifiers no longer use one fixed predictor set at every
+level. v0.8.7 computes a class-balanced Fisher ranking separately for:
+
+```text
+Family
+Architecture conditioned on Family
+Variant conditioned on Family + Architecture
+```
+
+Each trained stage stores its own `feature_columns`. This permits, for example,
+packet-size entropy and IAT variability to be important for family separation
+while directional packet-size statistics or transfer occupancy dominate a
+CNN architecture decision.
+
+Both `full` and `size_normalized` model families use this procedure.
+
+During grouped cross-validation the Fisher ranking is re-fitted only from the
+training experiments in each fold. The held-out run is never used for feature
+selection.
+
+Every model directory now contains:
+
+```text
+bundle.pkl
+metadata.json
+fisher_scores.csv
+```
+
+Run the normal no-argument trainer:
+
+```bash
+python3 prepare_fingerprinting_dataset.py
+python3 train_fingerprinting_models.py
+```
+
+See `V0_8_7_FISHER_FEATURE_SELECTION.md` for the scoring formula, defaults,
+leakage-control rule, and reporting guidance.
+
+
+## Dual architecture inference (v0.8.6)
+
+Version 0.8.6 adds two architecture-fingerprinting paths that share exactly
+the same proxy-observable feature definitions.
+
+### Progressive real-time inference
+
+The proxy starts a label-blind live `tshark` metadata reader alongside the
+archival PCAP capture. The live reader uses the same client-facing BPF
+isolation and the same offload-disabled interface state as the stored PCAP.
+
+It emits independent feature windows at:
+
+```text
+0.5 s
+1.0 s
+2.0 s
+5.0 s
+```
+
+The scales are configurable. Each window contains only traffic already
+observed inside that interval; future packets are never used.
+
+When trained models are present under `fingerprinting_models/`, each completed
+window produces hierarchical probabilities:
+
+```text
+Family -> Architecture -> Variant
+```
+
+A decision is considered stable only after the configured number of
+consecutive windows exceed the confidence threshold. The default is:
+
+```text
+confidence >= 0.90
+stable windows = 3
+```
+
+Outputs:
+
+```text
+<run>_live_features.csv
+<run>_live_architecture_predictions.jsonl
+<run>_live_architecture_summary.json
+```
+
+If no trained real-time model exists yet, the live monitor still collects the
+multiscale network-only feature windows. This permits collection first and
+training later without fabricating predictions.
+
+### End-of-experiment inference
+
+When the proxy stops, the normal PCAP extraction produces one complete-trace
+`overall` feature row for every client. If a final model bundle exists, v0.8.6
+automatically predicts from the complete trace and writes:
+
+```text
+<run>_final_architecture_predictions.json
+```
+
+This path is separate from the real-time classifier because final totals such
+as complete byte volume, packet count, duration, and burst count do not exist
+during an early online decision.
+
+### Full versus size-normalized fingerprints
+
+Both real-time and final models are trained in two feature configurations.
+
+`full` retains every permitted proxy feature, including absolute packet and
+byte footprint.
+
+`size_normalized` removes the dominant absolute count/volume fields while
+retaining rates, fractions, packet-size distributions, inter-arrival timing,
+burst morphology, and related normalized network structure.
+
+This supports two research questions:
+
+1. How much architecture information leaks to a realistic passive observer?
+2. Does architecture remain distinguishable after suppressing the obvious
+   serialized-model-size signal?
+
+### Training
+
+Prepare the proxy-only X matrix and ground-truth Y labels as before:
+
+```bash
+python3 prepare_fingerprinting_dataset.py
+```
+
+Then train every available final and real-time model with one command:
+
+```bash
+python3 train_fingerprinting_models.py
+```
+
+The trainer creates model bundles under:
+
+```text
+fingerprinting_models/
+  full/
+    final/
+    realtime_0p5s/
+    realtime_1s/
+    realtime_2s/
+    realtime_5s/
+  size_normalized/
+    final/
+    realtime_0p5s/
+    realtime_1s/
+    realtime_2s/
+    realtime_5s/
+```
+
+The model trainer performs group-aware evaluation by experiment ID when enough
+independent runs exist. If each class has fewer than two independent
+experiments, the metadata explicitly reports
+`insufficient_independent_runs`. Windows from one run are never treated as
+independent train/test experiments for publication metrics.
+
+Legacy v0.8.4/v0.8.5 feature files without `window_size_sec` can still
+bootstrap a 5-second real-time model because v0.8.6 infers the scale from
+`window_end_sec - window_start_sec`.
+
+### Coordinated experiment IDs
+
+Interactive network runs now require an explicit non-`auto` experiment ID.
+Federated clients include that ID in `fl_get` and `fl_update`, and the server
+rejects clients whose ID does not match the server's run.
+
+Client, server, and proxy now default to the same relative output directory:
+
+```text
+experiments/results
+```
+
+The proxy remains label-blind; its coordinated ID is still entered by the
+operator, but the workflow no longer silently generates unrelated automatic
+IDs.
 
 
 ## Experiment-4 corrections and encrypted FL workflow (v0.8.5)

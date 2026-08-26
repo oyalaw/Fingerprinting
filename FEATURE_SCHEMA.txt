@@ -94,3 +94,12 @@ tls_record_size_mean
 tls_record_size_std
 tls_record_size_min
 tls_record_size_max
+
+
+v0.8.6 temporal metadata
+------------------------
+window_size_sec identifies the independent feature-window scale (for example
+0.5, 1, 2, or 5 seconds). A value of 0 denotes the complete-trace overall row.
+
+window_size_sec, window_index, window_start_sec, window_end_sec, and the global
+alignment offsets are metadata only and are never model predictors.

@@ -17,7 +17,7 @@ import numpy as np
 from ..fingerprinting_dataset import SAFE_SEQUENCE_FIELDS, sanitize_packet_sequence
 
 
-FEATURE_SCHEMA_VERSION = "1.1"
+FEATURE_SCHEMA_VERSION = "1.2"
 PACKET_SCHEMA_VERSION = "1.1"
 
 
@@ -909,6 +909,7 @@ def _extract_single_feature_row(
         "window_index": window_index,
         "window_start_sec": window_start_sec,
         "window_end_sec": window_end_sec,
+        "window_size_sec": 0.0,
         "packet_count_total": packet_count,
         "packet_count_up": len(up_packets),
         "packet_count_down": len(down_packets),
@@ -1059,29 +1060,85 @@ def extract_feature_rows(
         return rows
 
     window_count = max(1, int(math.ceil(total_duration / window_seconds)))
-    for window_index in range(window_count):
+
+    # Linear-time binning. The earlier implementation scanned every packet
+    # for every window, which becomes prohibitively expensive for millions
+    # of packets at sub-second resolutions.
+    bins: List[List[PacketRecord]] = [
+        [] for _ in range(window_count)
+    ]
+    for packet in packets:
+        relative = max(
+            0.0,
+            packet.timestamp_epoch - first_timestamp,
+        )
+        index = int(relative // window_seconds)
+        if index >= window_count:
+            # A packet exactly on the final endpoint belongs to the final
+            # available bin rather than creating an unreported extra window.
+            index = window_count - 1
+        bins[index].append(packet)
+
+    for window_index, selected in enumerate(bins):
         start = window_index * window_seconds
         end = start + window_seconds
-        selected = [
-            packet
-            for packet in packets
-            if start
-            <= packet.timestamp_epoch - first_timestamp
-            < end
-        ]
-        rows.append(
-            _extract_single_feature_row(
-                packets=selected,
-                experiment_id=experiment_id,
-                row_type="window",
-                window_index=window_index,
-                window_start_sec=start,
-                window_end_sec=end,
-                burst_gap_sec=burst_gap_sec,
-                idle_threshold_sec=idle_threshold_sec,
-            )
+        row = _extract_single_feature_row(
+            packets=selected,
+            experiment_id=experiment_id,
+            row_type="window",
+            window_index=window_index,
+            window_start_sec=start,
+            window_end_sec=end,
+            burst_gap_sec=burst_gap_sec,
+            idle_threshold_sec=idle_threshold_sec,
         )
+        row["window_size_sec"] = float(window_seconds)
+        rows.append(row)
 
+    return rows
+
+
+def extract_multiscale_feature_rows(
+    packets: Sequence[PacketRecord],
+    experiment_id: str,
+    burst_gap_sec: float = 0.05,
+    idle_threshold_sec: float = 0.5,
+    window_sizes_sec: Sequence[float] = (0.5, 1.0, 2.0, 5.0),
+) -> List[Dict[str, Any]]:
+    """Return one complete-trace row and online-compatible windows.
+
+    Every window uses only packets observed inside that interval. Multiple
+    scales are kept in one long-form feature table and distinguished by
+    ``window_size_sec``.
+    """
+    normalized: List[float] = []
+    for value in window_sizes_sec:
+        size = float(value)
+        if size <= 0:
+            raise ValueError("window_sizes_sec values must be positive")
+        if size not in normalized:
+            normalized.append(size)
+    normalized.sort()
+
+    overall = extract_feature_rows(
+        packets=packets,
+        experiment_id=experiment_id,
+        burst_gap_sec=burst_gap_sec,
+        idle_threshold_sec=idle_threshold_sec,
+        window_seconds=None,
+    )[0]
+    overall["window_size_sec"] = 0.0
+    rows: List[Dict[str, Any]] = [overall]
+
+    for size in normalized:
+        scale_rows = extract_feature_rows(
+            packets=packets,
+            experiment_id=experiment_id,
+            burst_gap_sec=burst_gap_sec,
+            idle_threshold_sec=idle_threshold_sec,
+            window_seconds=size,
+        )
+        rows.extend(scale_rows[1:])
     return rows
 
 
@@ -1255,6 +1312,7 @@ def _feature_count(row: Dict[str, Any]) -> int:
         "window_index",
         "window_start_sec",
         "window_end_sec",
+        "window_size_sec",
         "trace_start_offset_sec",
         "trace_end_offset_sec",
         "window_start_global_sec",
@@ -1282,6 +1340,7 @@ def write_manifest(
     burst_gap_sec: float,
     idle_threshold_sec: float,
     window_seconds: Optional[float],
+    window_sizes_sec: Optional[Sequence[float]] = None,
 ) -> Path:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1333,6 +1392,11 @@ def write_manifest(
             "burst_gap_sec": burst_gap_sec,
             "idle_threshold_sec": idle_threshold_sec,
             "window_seconds": window_seconds,
+            "window_sizes_sec": (
+                [float(value) for value in window_sizes_sec]
+                if window_sizes_sec
+                else None
+            ),
             "overall_row_included": True,
         },
         "capture_interface": {
@@ -1401,6 +1465,7 @@ def _export_packets_artifacts(
     burst_gap_sec: float = 0.05,
     idle_threshold_sec: float = 0.5,
     window_seconds: Optional[float] = 5.0,
+    window_sizes_sec: Optional[Sequence[float]] = None,
     filename_suffix: str = "",
 ) -> Dict[str, Any]:
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -1421,12 +1486,22 @@ def _export_packets_artifacts(
     feature_csv = target_dir / f"{stem}_features.csv"
     manifest_json = target_dir / f"{stem}_manifest.json"
 
-    feature_rows = extract_feature_rows(
-        packets=packets,
-        experiment_id=experiment_id,
-        burst_gap_sec=burst_gap_sec,
-        idle_threshold_sec=idle_threshold_sec,
-        window_seconds=window_seconds,
+    feature_rows = (
+        extract_multiscale_feature_rows(
+            packets=packets,
+            experiment_id=experiment_id,
+            burst_gap_sec=burst_gap_sec,
+            idle_threshold_sec=idle_threshold_sec,
+            window_sizes_sec=window_sizes_sec,
+        )
+        if window_sizes_sec
+        else extract_feature_rows(
+            packets=packets,
+            experiment_id=experiment_id,
+            burst_gap_sec=burst_gap_sec,
+            idle_threshold_sec=idle_threshold_sec,
+            window_seconds=window_seconds,
+        )
     )
 
     write_packet_sequence_csv(
@@ -1466,12 +1541,22 @@ def _export_packets_artifacts(
                 experiment_id=experiment_id,
                 output_path=client_safe,
             )
-            rows = extract_feature_rows(
-                packets=client_packets,
-                experiment_id=experiment_id,
-                burst_gap_sec=burst_gap_sec,
-                idle_threshold_sec=idle_threshold_sec,
-                window_seconds=window_seconds,
+            rows = (
+                extract_multiscale_feature_rows(
+                    packets=client_packets,
+                    experiment_id=experiment_id,
+                    burst_gap_sec=burst_gap_sec,
+                    idle_threshold_sec=idle_threshold_sec,
+                    window_sizes_sec=window_sizes_sec,
+                )
+                if window_sizes_sec
+                else extract_feature_rows(
+                    packets=client_packets,
+                    experiment_id=experiment_id,
+                    burst_gap_sec=burst_gap_sec,
+                    idle_threshold_sec=idle_threshold_sec,
+                    window_seconds=window_seconds,
+                )
             )
             combined_start_epoch = (
                 packets[0].timestamp_epoch if packets else 0.0
@@ -1559,6 +1644,7 @@ def _export_packets_artifacts(
         burst_gap_sec=burst_gap_sec,
         idle_threshold_sec=idle_threshold_sec,
         window_seconds=window_seconds,
+        window_sizes_sec=window_sizes_sec,
     )
 
     quality = capture_quality_diagnostics(
@@ -1606,6 +1692,7 @@ def extract_capture_artifacts(
     burst_gap_sec: float = 0.05,
     idle_threshold_sec: float = 0.5,
     window_seconds: Optional[float] = 5.0,
+    window_sizes_sec: Optional[Sequence[float]] = None,
 ) -> Dict[str, Any]:
     pcap = Path(pcap_path)
     if not pcap.exists():
@@ -1662,6 +1749,7 @@ def extract_capture_artifacts(
         burst_gap_sec=burst_gap_sec,
         idle_threshold_sec=idle_threshold_sec,
         window_seconds=window_seconds,
+        window_sizes_sec=window_sizes_sec,
     )
     result["pcap"] = str(pcap)
     return result

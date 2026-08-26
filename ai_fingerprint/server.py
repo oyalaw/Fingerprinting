@@ -348,12 +348,34 @@ class ExperimentServer:
             train_step_ms=train_step_ms,
         )
 
+    def _validate_federated_experiment_id(
+        self,
+        header: Dict[str, Any],
+    ) -> None:
+        expected = str(
+            self.config["experiment"]["experiment_id"]
+        )
+        received = str(
+            header.get("experiment_id", "")
+        ).strip()
+        if not received:
+            raise RuntimeError(
+                "Federated request is missing experiment_id"
+            )
+        if received != expected:
+            raise RuntimeError(
+                "Federated experiment ID mismatch: "
+                f"server={expected!r}, client={received!r}. "
+                "Restart the client with the same coordinated run ID."
+            )
+
     def _handle_fl_get(
         self,
         conn: socket.socket,
         request_id: str,
         header: Dict[str, Any],
     ) -> None:
+        self._validate_federated_experiment_id(header)
         coordinator = self._ensure_federated_coordinator()
         round_index, parameters, done = (
             coordinator.get_global()
@@ -392,6 +414,7 @@ class ExperimentServer:
         header: Dict[str, Any],
         payload: bytes,
     ) -> None:
+        self._validate_federated_experiment_id(header)
         coordinator = self._ensure_federated_coordinator()
         round_index = int(header["round"])
         client_id = str(header["client_id"])

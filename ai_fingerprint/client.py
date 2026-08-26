@@ -375,6 +375,9 @@ class ExperimentClient:
                     {
                         "op": "fl_get",
                         "request_id": request_id,
+                        "experiment_id": str(
+                            self.config["experiment"]["experiment_id"]
+                        ),
                         "client_id": client_id,
                     },
                 )
@@ -476,6 +479,9 @@ class ExperimentClient:
                     {
                         "op": "fl_update",
                         "request_id": uuid.uuid4().hex,
+                        "experiment_id": str(
+                            self.config["experiment"]["experiment_id"]
+                        ),
                         "client_id": client_id,
                         "round": round_index,
                         "num_examples": examples,

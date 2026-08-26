@@ -185,3 +185,24 @@ to resolve the actual federated client automatically.
 
 This mapping is not attacker input. IP addresses, client IDs, and global timing
 alignment fields are excluded from the predictor matrix.
+
+
+v0.8.6 dual inference
+---------------------
+capture.window_sizes_sec:
+  [0.5, 1.0, 2.0, 5.0]
+
+architecture_inference:
+  enabled: true
+  realtime_enabled: true
+  final_enabled: true
+  realtime_required: true
+  model_root: fingerprinting_models
+  feature_modes: [full, size_normalized]
+  confidence_threshold: 0.90
+  stable_windows: 3
+
+The real-time sidecar observes the same client-facing interface and BPF scope as
+the archival capture. It neither terminates TLS nor parses AI payloads. If no
+trained bundle is present it emits live network features but no synthetic
+prediction.

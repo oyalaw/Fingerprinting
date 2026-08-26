@@ -157,10 +157,19 @@ def interactive_configure(
 ) -> Dict[str, Any]:
     config = copy.deepcopy(DEFAULT_CONFIG)
 
-    config["experiment"]["experiment_id"] = ask_text(
-        "Experiment ID; use the same ID on client, server, and proxy",
-        "auto",
-    )
+    while True:
+        coordinated_id = ask_text(
+            "Coordinated experiment ID; enter the SAME value on server, "
+            "all clients, and proxy",
+            "",
+        ).strip()
+        if coordinated_id and coordinated_id.lower() != "auto":
+            break
+        print(
+            "A non-auto coordinated experiment ID is required for "
+            "networked experiments."
+        )
+    config["experiment"]["experiment_id"] = coordinated_id
     config["experiment"]["output_dir"] = ask_text(
         "Experiment output directory",
         "experiments/results",
@@ -430,14 +439,22 @@ def interactive_configure(
 def interactive_proxy_configure() -> Dict[str, Any]:
     config = copy.deepcopy(DEFAULT_PROXY_CONFIG)
 
-    experiment_id = ask_text(
-        "Proxy experiment ID; use auto for timestamped ID",
-        "auto",
-    )
+    while True:
+        experiment_id = ask_text(
+            "Coordinated experiment ID; enter the SAME value used by "
+            "the server and all clients",
+            "",
+        ).strip()
+        if experiment_id and experiment_id.lower() != "auto":
+            break
+        print(
+            "A non-auto coordinated experiment ID is required for "
+            "the proxy."
+        )
     config["experiment"]["experiment_id"] = experiment_id
     config["experiment"]["output_dir"] = ask_text(
         "Proxy output directory",
-        "proxy_results",
+        "experiments/results",
     )
 
     config["proxy"]["listen_host"] = ask_text(
@@ -562,13 +579,100 @@ def interactive_proxy_configure() -> Dict[str, Any]:
         )
 
         window_text = ask_text(
-            "Feature window in seconds; enter 0 for overall only",
-            "5.0",
+            "Feature window scales in seconds, comma-separated",
+            "0.5,1,2,5",
         )
-        window_value = float(window_text)
-        config["capture"]["window_seconds"] = (
-            window_value if window_value > 0 else None
+        window_sizes = sorted(
+            {
+                float(value.strip())
+                for value in window_text.split(",")
+                if value.strip()
+            }
         )
+        if not window_sizes or any(
+            value <= 0 for value in window_sizes
+        ):
+            raise ValueError(
+                "At least one positive feature window scale is required"
+            )
+        config["capture"]["window_sizes_sec"] = window_sizes
+        # Keep the largest scale in the legacy field for older utilities.
+        config["capture"]["window_seconds"] = max(window_sizes)
+
+        inference_enabled = ask_yes_no(
+            "Enable architecture fingerprinting "
+            "(real-time + end-of-experiment)",
+            True,
+        )
+        config["architecture_inference"][
+            "enabled"
+        ] = inference_enabled
+
+        if inference_enabled:
+            config["architecture_inference"][
+                "realtime_enabled"
+            ] = ask_yes_no(
+                "Enable real-time progressive architecture inference",
+                True,
+            )
+            config["architecture_inference"][
+                "final_enabled"
+            ] = ask_yes_no(
+                "Enable final complete-trace architecture inference",
+                True,
+            )
+            config["architecture_inference"][
+                "realtime_required"
+            ] = ask_yes_no(
+                "Abort the run if the real-time tshark monitor cannot start",
+                True,
+            )
+            config["architecture_inference"][
+                "model_root"
+            ] = ask_text(
+                "Architecture model directory",
+                "fingerprinting_models",
+            )
+            mode_text = ask_text(
+                "Architecture feature modes "
+                "(full,size_normalized)",
+                "full,size_normalized",
+            )
+            modes = [
+                value.strip()
+                for value in mode_text.split(",")
+                if value.strip()
+            ]
+            unknown = set(modes) - {
+                "full",
+                "size_normalized",
+            }
+            if unknown:
+                raise ValueError(
+                    f"Unknown architecture feature modes: {sorted(unknown)}"
+                )
+            config["architecture_inference"][
+                "feature_modes"
+            ] = modes
+            threshold = float(
+                ask_text(
+                    "Real-time confidence threshold",
+                    "0.90",
+                )
+            )
+            if not 0.0 < threshold <= 1.0:
+                raise ValueError(
+                    "Confidence threshold must be in (0,1]"
+                )
+            config["architecture_inference"][
+                "confidence_threshold"
+            ] = threshold
+            config["architecture_inference"][
+                "stable_windows"
+            ] = ask_int(
+                "Consecutive confident windows before stable decision",
+                3,
+            )
 
     return config
 

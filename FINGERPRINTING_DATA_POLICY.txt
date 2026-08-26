@@ -191,3 +191,53 @@ New remote/federated collections should prefer TLS when the study claims
 encrypted traffic. The inline proxy remains label-blind and does not terminate
 TLS. Plain TCP remains valid for controlled debugging/baseline experiments but
 must not be presented as encrypted-traffic evidence.
+
+
+19. Real-time versus final architecture inference
+-------------------------------------------------
+Real-time models consume only completed live packet-metadata windows. No future
+packets, final experiment totals, client/server resource telemetry, current-run
+ground-truth labels, IP identity, or client identity may enter the predictor.
+
+Final models may consume the complete proxy-observable trace after capture
+ends. They are trained separately because complete-trace totals are unavailable
+to the live model.
+
+20. Multi-scale temporal windows
+--------------------------------
+v0.8.6 supports 0.5, 1, 2, and 5 second windows by default. window_size_sec is
+metadata, not a predictor. Each classifier scale is trained and evaluated
+separately.
+
+21. Size-normalized architecture evaluation
+--------------------------------------------
+The full model represents the realistic attacker and may use absolute traffic
+footprint. The size_normalized model suppresses absolute byte, packet, burst,
+and transport counts to test whether timing, rates, fractions, packet-size
+distributions, and burst morphology retain architecture information.
+
+22. Independent-run evaluation
+------------------------------
+Windows are correlated observations, not independent experiments. All reported
+generalization metrics must split by independent experiment/run groups. Never
+randomly place windows from the same run in both training and test sets.
+
+
+23. Stage-specific feature selection
+------------------------------------
+Family, architecture, and variant classifiers may use different predictor
+subsets. v0.8.7 selects each subset independently using class-balanced Fisher
+scores.
+
+24. Fisher-selection leakage control
+------------------------------------
+When evaluating generalization with grouped cross-validation, Fisher ranking
+must be fitted from the training experiments inside each fold. A held-out
+experiment must not influence the selected feature set.
+
+25. Fisher score is not robustness evidence
+--------------------------------------------
+A high Fisher score establishes univariate separability in the observed
+conditions. It does not establish invariance to bandwidth, latency, loss,
+jitter, congestion, device capability, or runtime changes. Those claims require
+explicit unseen-condition evaluation.

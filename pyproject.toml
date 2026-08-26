@@ -4,14 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-fingerprint-experiment"
-version = "0.8.5"
-description = "AI workload fingerprinting experiments with inference, centralized training, federated training, resource telemetry, and proxy traffic features"
+version = "0.8.7"
+description = "AI workload fingerprinting with proxy-only multiscale features, progressive real-time inference, complete-trace inference, and federated experiments"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
   "PyYAML>=6.0",
   "Pillow>=10.0",
-  "psutil>=5.9"
+  "psutil>=5.9",
+  "scikit-learn>=1.4"
 ]
 
 [tool.pytest.ini_options]
