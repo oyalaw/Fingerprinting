@@ -438,7 +438,7 @@ class TensorFlowWorkload(Workload):
         self,
         inputs: np.ndarray,
         targets: np.ndarray,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         tf = self.tf
         x = self._input_tensor(inputs)
 
@@ -452,6 +452,7 @@ class TensorFlowWorkload(Workload):
                 target_array = np.transpose(targets, (0, 2, 3, 1))
                 y = tf.convert_to_tensor(target_array, dtype=tf.float32)
                 reconstruction_loss = tf.reduce_mean(tf.square(output - y))
+                mae = tf.reduce_mean(tf.abs(output - y))
                 kl_loss = getattr(self.model, "last_kl_loss", None)
                 beta = float(getattr(self.model, "vae_beta", 1.0))
                 loss = (
@@ -460,6 +461,7 @@ class TensorFlowWorkload(Workload):
                     else reconstruction_loss
                 )
                 accuracy = None
+                predictions = None
             else:
                 y = tf.reshape(
                     tf.convert_to_tensor(targets, dtype=tf.int64),
@@ -488,13 +490,34 @@ class TensorFlowWorkload(Workload):
         ]
         self.optimizer.apply_gradients(pairs)
 
-        metrics = {
+        metrics: Dict[str, Any] = {
             "loss": float(loss.numpy()),
             "learning_rate": self.learning_rate,
+            "samples": int(inputs.shape[0]),
         }
         if accuracy is not None:
             metrics["accuracy"] = accuracy
+            metrics["_targets"] = np.asarray(y.numpy(), dtype=np.int64)
+            metrics["_predictions"] = np.asarray(
+                predictions.numpy(), dtype=np.int64
+            )
+        else:
+            metrics["reconstruction_loss"] = float(reconstruction_loss.numpy())
+            metrics["mse"] = metrics["reconstruction_loss"]
+            metrics["mae"] = float(mae.numpy())
+            if kl_loss is not None:
+                metrics["kl_loss"] = float(kl_loss.numpy())
+                metrics["vae_beta"] = beta
         return metrics
+
+    def evaluation_extras(self) -> Dict[str, Any]:
+        kl_loss = getattr(self.model, "last_kl_loss", None)
+        if kl_loss is None:
+            return {}
+        return {
+            "kl_loss": float(kl_loss.numpy()),
+            "vae_beta": float(getattr(self.model, "vae_beta", 1.0)),
+        }
 
     def get_parameters(self) -> list[np.ndarray]:
         return [np.array(value, copy=True) for value in self.model.get_weights()]

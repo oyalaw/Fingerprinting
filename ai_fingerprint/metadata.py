@@ -69,9 +69,19 @@ def ground_truth_record(config: Dict[str, Any]) -> Dict[str, Any]:
         # value, and fingerprinting_dataset.py forbids client_id as a model
         # predictor. It allows per-client proxy traces to join to the correct
         # client device label in multi-client FL experiments.
-        record["client_id"] = str(
-            config.get("federated", {}).get("client_id", "")
-        )
+        federated = config.get("federated", {})
+        record["client_id"] = str(federated.get("client_id", ""))
+        if (
+            federated.get("policy_source") == "server"
+            and not bool(federated.get("policy_applied", False))
+        ):
+            # Do not mislabel pre-handshake client events with placeholder
+            # defaults. These become authoritative after policy negotiation.
+            record["input_size"] = None
+            record["batch_size"] = None
+            record["training_policy_status"] = "pending_server"
+        else:
+            record["training_policy_status"] = "applied"
 
     return record
 
@@ -86,6 +96,10 @@ class EventLogger:
             output_dir
             / f"{experiment_id}_{role_token}_ground_truth.jsonl"
         )
+        self.base = ground_truth_record(config)
+
+    def refresh_base(self, config: Dict[str, Any]) -> None:
+        """Refresh static ground-truth fields after server policy negotiation."""
         self.base = ground_truth_record(config)
 
     def write(self, event: str, **fields: Any) -> None:

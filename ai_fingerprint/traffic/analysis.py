@@ -1341,6 +1341,7 @@ def write_manifest(
     idle_threshold_sec: float,
     window_seconds: Optional[float],
     window_sizes_sec: Optional[Sequence[float]] = None,
+    capture_isolation_metadata: Optional[Dict[str, Any]] = None,
 ) -> Path:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1364,9 +1365,12 @@ def write_manifest(
         "capture": source_capture,
         "capture_isolation": {
             "mode": (
-                "client_ip_bpf_and_postfilter"
-                if client_ips
-                else "legacy_unisolated"
+                (capture_isolation_metadata or {}).get("mode")
+                or (
+                    "client_ip_bpf_and_postfilter"
+                    if client_ips
+                    else "legacy_unisolated"
+                )
             ),
             "client_facing_only": bool(client_ips),
             "configured_client_ips": list(client_ips),
@@ -1377,6 +1381,7 @@ def write_manifest(
                 "network traffic. Endpoint identity is removed from "
                 "classifier-safe sequences."
             ),
+            **dict(capture_isolation_metadata or {}),
         },
         "direction_reference": {
             "server_ip": server_ip,
@@ -1467,6 +1472,7 @@ def _export_packets_artifacts(
     window_seconds: Optional[float] = 5.0,
     window_sizes_sec: Optional[Sequence[float]] = None,
     filename_suffix: str = "",
+    capture_isolation_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     target_dir.mkdir(parents=True, exist_ok=True)
     clients = _normalized_client_ips(
@@ -1645,6 +1651,7 @@ def _export_packets_artifacts(
         idle_threshold_sec=idle_threshold_sec,
         window_seconds=window_seconds,
         window_sizes_sec=window_sizes_sec,
+        capture_isolation_metadata=capture_isolation_metadata,
     )
 
     quality = capture_quality_diagnostics(
@@ -1693,6 +1700,7 @@ def extract_capture_artifacts(
     idle_threshold_sec: float = 0.5,
     window_seconds: Optional[float] = 5.0,
     window_sizes_sec: Optional[Sequence[float]] = None,
+    capture_isolation_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     pcap = Path(pcap_path)
     if not pcap.exists():
@@ -1750,6 +1758,7 @@ def extract_capture_artifacts(
         idle_threshold_sec=idle_threshold_sec,
         window_seconds=window_seconds,
         window_sizes_sec=window_sizes_sec,
+        capture_isolation_metadata=capture_isolation_metadata,
     )
     result["pcap"] = str(pcap)
     return result

@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections import defaultdict, deque
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -146,6 +147,8 @@ class LiveArchitectureMonitor:
         client_ips: Sequence[str],
         client_aliases: Mapping[str, str] | None,
         port: int,
+        proxy_ip: Optional[str] = None,
+        exclude_hosts: Sequence[str] = (),
         output_dir: str | Path,
         window_sizes_sec: Sequence[float],
         burst_gap_sec: float,
@@ -167,6 +170,14 @@ class LiveArchitectureMonitor:
             self.client_ips,
             client_aliases=dict(client_aliases or {}),
         )
+        self._configured_aliases = dict(client_aliases or {})
+        self.proxy_ip = str(proxy_ip or "").strip() or None
+        self.exclude_hosts = [
+            str(value).strip()
+            for value in exclude_hosts
+            if str(value).strip()
+        ]
+        self._exclude_host_set = set(self.exclude_hosts)
         self.port = int(port)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -214,6 +225,10 @@ class LiveArchitectureMonitor:
         self._reader_thread: Optional[threading.Thread] = None
         self._ticker_thread: Optional[threading.Thread] = None
         self._traces: Dict[str, _TraceState] = {}
+        # A few TCP handshake packets can reach tshark before accept() returns.
+        # Buffer them briefly by peer and release them only after the proxy
+        # confirms an actual accepted client connection.
+        self._pending_packets: Dict[str, Deque[PacketRecord]] = {}
         self._capture_start_epoch: Optional[float] = None
         self._feature_writer = None
         self._feature_handle = None
@@ -253,8 +268,17 @@ class LiveArchitectureMonitor:
             )
 
         capture_filter = build_capture_filter(
-            hosts=self.client_ips,
+            host=(
+                self.proxy_ip
+                if (
+                    not self.client_ips
+                    and self.proxy_ip not in {None, "", "0.0.0.0", "::"}
+                )
+                else None
+            ),
+            hosts=self.client_ips if self.client_ips else None,
             port=self.port,
+            exclude_hosts=self.exclude_hosts,
         )
 
         command = [
@@ -381,6 +405,11 @@ class LiveArchitectureMonitor:
             "stable_windows": self.stable_windows,
             "feature_csv": str(self.feature_csv),
             "prediction_jsonl": str(self.prediction_jsonl),
+            "discovered_client_ips": list(self.client_ips),
+            "client_aliases": dict(self.aliases),
+            "unaccepted_peer_buffers_discarded": sum(
+                len(values) for values in self._pending_packets.values()
+            ),
             "stable_first": [
                 {
                     "trace_id": key[0],
@@ -398,6 +427,80 @@ class LiveArchitectureMonitor:
         )
         return summary
 
+    def register_client(
+        self,
+        client_ip: str,
+        *,
+        alias: Optional[str] = None,
+    ) -> str:
+        """Register a client for live trace grouping.
+
+        Registration may come from the proxy accept() path or from the
+        metadata reader itself. The IP is grouping metadata only; it is never
+        written into classifier-safe predictor rows.
+        """
+        value = str(client_ip).strip()
+        if not value:
+            raise LiveInferenceError("client_ip is required")
+
+        with self._lock:
+            existing = self.aliases.get(value)
+            if existing:
+                return existing
+
+            selected = str(alias or "").strip()
+            if not selected:
+                selected = str(self._configured_aliases.get(value, "")).strip()
+            if not selected:
+                selected = f"trace_{len(self.aliases) + 1:03d}"
+
+            if value not in self.client_ips:
+                self.client_ips.append(value)
+            self.aliases[value] = selected
+
+            pending = list(self._pending_packets.pop(value, ()))
+            for packet in pending:
+                packet = replace(
+                    packet,
+                    direction=resolve_direction(
+                        src_ip=packet.src_ip,
+                        dst_ip=packet.dst_ip,
+                        client_ips=self.client_ips,
+                    ),
+                )
+                self._append_registered_packet_locked(selected, packet)
+            return selected
+
+    def _append_registered_packet_locked(
+        self,
+        alias: str,
+        packet: PacketRecord,
+    ) -> None:
+        if self._capture_start_epoch is None:
+            self._capture_start_epoch = packet.timestamp_epoch
+        state = self._traces.get(alias)
+        if state is None:
+            state = _TraceState(
+                alias,
+                packet.timestamp_epoch,
+                self.window_sizes,
+            )
+            self._traces[alias] = state
+        state.packets.append(packet)
+
+    def _infer_client_peer(self, packet: PacketRecord) -> Optional[str]:
+        if not self.proxy_ip:
+            return None
+        if packet.src_ip == self.proxy_ip and packet.dst_ip:
+            peer = packet.dst_ip
+        elif packet.dst_ip == self.proxy_ip and packet.src_ip:
+            peer = packet.src_ip
+        else:
+            return None
+        if peer in self._exclude_host_set:
+            return None
+        return peer
+
     def _reader_loop(self) -> None:
         assert self._process is not None
         assert self._process.stdout is not None
@@ -407,31 +510,32 @@ class LiveArchitectureMonitor:
                 break
             if not line.strip():
                 continue
+            with self._lock:
+                client_snapshot = list(self.client_ips)
+                alias_snapshot = dict(self.aliases)
             packet = _packet_from_columns(
                 line.rstrip("\n").split("\t"),
-                self.client_ips,
+                client_snapshot,
             )
             client_ip = None
-            if packet.src_ip in self.aliases:
+            if packet.src_ip in alias_snapshot:
                 client_ip = packet.src_ip
-            elif packet.dst_ip in self.aliases:
+            elif packet.dst_ip in alias_snapshot:
                 client_ip = packet.dst_ip
             if client_ip is None:
+                peer = self._infer_client_peer(packet)
+                if peer is not None:
+                    with self._lock:
+                        pending = self._pending_packets.get(peer)
+                        if pending is None:
+                            pending = deque(maxlen=256)
+                            self._pending_packets[peer] = pending
+                        pending.append(packet)
                 continue
 
-            alias = self.aliases[client_ip]
             with self._lock:
-                if self._capture_start_epoch is None:
-                    self._capture_start_epoch = packet.timestamp_epoch
-                state = self._traces.get(alias)
-                if state is None:
-                    state = _TraceState(
-                        alias,
-                        packet.timestamp_epoch,
-                        self.window_sizes,
-                    )
-                    self._traces[alias] = state
-                state.packets.append(packet)
+                alias = self.aliases[client_ip]
+                self._append_registered_packet_locked(alias, packet)
 
     def _ticker_loop(self) -> None:
         while not self._stop.wait(0.10):

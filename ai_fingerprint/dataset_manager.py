@@ -915,6 +915,10 @@ class DatasetManager:
         self._cursor += 1
         return index
 
+    def reset(self) -> None:
+        """Reset sampling to the beginning of the prepared index order."""
+        self._cursor = 0
+
     def sample(self) -> np.ndarray:
         batch_size = int(self.config["execution"]["batch_size"])
         samples = [
@@ -938,7 +942,18 @@ class DatasetManager:
             for _ in range(batch_size)
         ]
         samples = [pair[0] for pair in pairs]
-        targets = [pair[1] for pair in pairs]
+        application = str(self.config.get("ai", {}).get("application", ""))
+        if application in {
+            "reconstruction",
+            "anomaly_detection",
+            "image_denoising",
+        }:
+            # Autoencoder-style workloads reconstruct the input. Public image
+            # datasets normally expose class labels as their second item;
+            # those labels are not valid reconstruction targets.
+            targets = [np.asarray(sample, dtype=np.float32) for sample in samples]
+        else:
+            targets = [pair[1] for pair in pairs]
         try:
             return (
                 np.stack(samples, axis=0),

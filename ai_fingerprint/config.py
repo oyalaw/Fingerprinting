@@ -19,12 +19,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "experiment": {
         "experiment_id": "auto",
         "output_dir": "experiments/results",
+        "results_root": "experiments/results",
         "existing_output_policy": "error",
     },
     "node": {
         "role": "server",
-        "host": "0.0.0.0",
-        "port": 5000,
+        "host": "10.42.0.195",
+        "port": 8080,
     },
     "transport": {
         # Kept as tcp for backward-compatible scripted configs. The
@@ -90,10 +91,27 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "expected_clients": 2,
         "client_id": "client_1",
         "aggregation": "fedavg",
+        "policy_source": "server",
+        "policy_applied": False,
+        "policy_id": None,
     },
     "device": {
         "label": "custom",
         "operating_system": "unknown",
+    },
+    "performance_logging": {
+        # Ground-truth/system-characterization only. These metrics are never
+        # admitted into proxy-side fingerprinting predictor sets.
+        "enabled": True,
+        # Client evaluates one held-out round probe before and after local
+        # training. This adds two forward passes per FL round.
+        "client_round_probe": True,
+        # Server evaluates the aggregated global model on a separate split
+        # after each FedAvg round. Evaluation is intentionally part of the
+        # synchronous server round and its time is logged explicitly.
+        "server_eval_batches": 10,
+        "server_eval_split": "test",
+        "server_evaluation_required": False,
     },
     "resource_monitor": {
         "enabled": True,
@@ -413,6 +431,18 @@ def validate_config(config: Dict[str, Any]) -> None:
             raise ConfigError(
                 "v0.6 currently implements federated.aggregation=fedavg"
             )
+
+    performance = config.get("performance_logging", {})
+    if int(performance.get("server_eval_batches", 10)) <= 0:
+        raise ConfigError(
+            "performance_logging.server_eval_batches must be positive"
+        )
+    if str(performance.get("server_eval_split", "test")) not in {
+        "train", "test", "validation"
+    }:
+        raise ConfigError(
+            "performance_logging.server_eval_split must be train, test, or validation"
+        )
 
     monitor = config.get("resource_monitor", {})
     if int(monitor.get("interval_ms", 500)) < 100:

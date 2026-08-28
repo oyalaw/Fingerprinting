@@ -67,3 +67,10 @@ federated:
   expected_clients: 2
   client_id: client_1
   aggregation: fedavg
+
+performance_logging:
+  enabled: true
+  client_round_probe: true
+  server_eval_batches: 10
+  server_eval_split: test
+  server_evaluation_required: false

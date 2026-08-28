@@ -1,61 +1,43 @@
 experiment:
-  experiment_id: EXP_PROXY_001
-  output_dir: experiments/results
+  experiment_id: exp1
+  results_root: experiments/results
+  # Operator-only storage metadata. It organizes files but never enters X.
+  storage_locator: cnn/resnet/resnet18/image_classification/cifar10/pytorch/exp1
+  output_dir: experiments/results/cnn/resnet/resnet18/image_classification/cifar10/pytorch/exp1/proxy
   existing_output_policy: error
 
 proxy:
-  listen_host: 0.0.0.0
-  listen_port: 5000
+  listen_host: 10.42.0.1
+  listen_port: 8080
   upstream_host: 10.42.0.195
-  upstream_port: 5000
+  upstream_port: 8080
   connect_timeout_sec: 30
   buffer_size: 65536
-  # recv() chunks are proxy diagnostics, not packet boundaries. Leave false
-  # for normal experiments to avoid a large forwarding CSV.
   forwarding_log_enabled: false
 
 capture:
   enabled: true
-  interface: wlan0
-
-  # REQUIRED by default. The BPF filter captures only packets involving
-  # these clients, preventing a second copy of the same byte stream from
-  # being captured on the proxy -> upstream-server leg.
-  client_ips:
-    - 10.42.0.47
-    - 10.42.0.210
-
-  # Optional capture aliases. Leave this empty for new federated runs.
-  # Neutral trace_### identifiers will be generated, then dataset preparation
-  # resolves each trace to the actual federated client_id using the client's
-  # network_registration ground truth. These mappings never enter X.
+  # Interactive runs auto-detect this; scripted runs may set it explicitly.
+  interface: wlo1
+  # Default: discover participating clients from actual accepted proxy
+  # connections. The BPF scopes traffic to 10.42.0.1:8080 and excludes
+  # upstream 10.42.0.195, so client IPs are not required in advance.
+  client_discovery_mode: automatic
+  client_ips: []
   client_aliases: {}
-
   strict_client_isolation: true
   per_client_artifacts: true
-
-  # Store only the first 256 bytes of each frame. The PCAP still records the
-  # original frame length used by packet-size fingerprinting. Set 0 for full
-  # encrypted frame payloads.
   snaplen_bytes: 256
-
-  # v0.8.4 packet-size fidelity protection. Enabled by default.
-  # The proxy disables only enabled mutable capture-affecting offloads,
-  # verifies the capture-time state, and restores exactly what it changed.
   offload_management:
     enabled: true
     required: true
     allow_sudo_noninteractive: true
     restore_on_exit: true
     features: [gro, gso, tso, lro]
-
   proxy_client_facing_ip: null
   extract_after: true
   burst_gap_sec: 0.05
   idle_threshold_sec: 0.5
-
-  # v0.8.6 multi-scale windows. The largest scale is also kept in the
-  # legacy window_seconds field for backwards compatibility.
   window_seconds: 5.0
   window_sizes_sec: [0.5, 1.0, 2.0, 5.0]
   allow_single_scale: false

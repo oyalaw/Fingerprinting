@@ -28,6 +28,23 @@ from .experiment_output import (
     archive_existing_outputs,
     find_existing_outputs,
 )
+from .experiment_layout import (
+    ExperimentLayoutError,
+    materialize_role_metadata,
+    write_role_status,
+    apply_hierarchical_layout,
+    apply_proxy_locator_layout,
+    branch_directory,
+    locator_for,
+    next_experiment_number,
+    normalize_experiment_id,
+)
+from .networking import (
+    candidate_interfaces,
+    detect_consensus_interface,
+    detect_local_interface,
+    detect_route_interface,
+)
 from .offload import CaptureOffloadError
 from .proxy import (
     BlindTCPProxy,
@@ -89,6 +106,76 @@ def ask_yes_no(prompt: str, default: bool = True) -> bool:
         print("Enter y or n.")
 
 
+def _select_interface_fallback(prompt: str) -> str:
+    choices = candidate_interfaces()
+    if not choices:
+        raise ValueError(
+            "No usable IPv4 network interfaces were detected. "
+            "Check that the experiment interface is up."
+        )
+    return choose(prompt, choices)
+
+
+def _auto_resource_interface(config: Dict[str, Any]) -> str:
+    role = str(config.get("node", {}).get("role", ""))
+    detection = None
+    if role == "client":
+        detection = detect_route_interface(str(config["node"]["host"]))
+    elif role == "server":
+        host = str(config["node"].get("host", "")).strip()
+        if host and host not in {"0.0.0.0", "::"}:
+            detection = detect_local_interface(host)
+
+    if detection is not None:
+        detail = f" ({detection.local_ip})" if detection.local_ip else ""
+        print(
+            f"Automatically detected network interface: "
+            f"{detection.interface}{detail} "
+            f"[{detection.method}]"
+        )
+        return detection.interface
+
+    return _select_interface_fallback(
+        "Automatic interface detection was inconclusive; "
+        "select the experiment interface"
+    )
+
+
+def _configure_experiment_storage(
+    config: Dict[str, Any],
+    role: str,
+) -> None:
+    root = ask_text(
+        "Experiment results root",
+        "experiments/results",
+    )
+    branch = branch_directory(root, config)
+    suggested = next_experiment_number(branch)
+    print()
+    print(f"Experiment branch: {branch}")
+    print(f"Next available experiment in this branch: exp{suggested}")
+    prompt = (
+        "Experiment number; press Enter to use the next available number"
+        if role == "server" or config.get("execution", {}).get("deployment") == "local"
+        else "Coordinated experiment number; use the SAME number as the server"
+    )
+    raw = ask_text(prompt, str(suggested)).strip()
+    exp_id = normalize_experiment_id(raw)
+    role_token = role
+    if role == "client" and config.get("execution", {}).get("deployment") == "federated":
+        client_id = str(config.get("federated", {}).get("client_id", "client_1"))
+        role_token = client_id
+    apply_hierarchical_layout(
+        config,
+        root=root,
+        experiment_id=exp_id,
+        role_token=role_token,
+    )
+    print(f"Coordinated experiment ID: {config['experiment']['experiment_id']}")
+    print(f"Experiment storage locator: {locator_for(config)}")
+    print(f"Role output directory: {config['experiment']['output_dir']}")
+
+
 
 def resolve_existing_outputs_interactive(
     config: Dict[str, Any],
@@ -129,13 +216,45 @@ def resolve_existing_outputs_interactive(
         )
 
         if action == "use_new_experiment_id":
-            new_id = ask_text(
-                "New experiment ID; use auto for a timestamped ID",
-                "auto",
-            ).strip()
-            if not new_id or new_id == "auto":
-                new_id = generate_experiment_id()
-            config["experiment"]["experiment_id"] = new_id
+            experiment = config.get("experiment", {})
+            if experiment.get("layout_version") == "1.0" and "ai" in config:
+                branch = Path(experiment["branch_dir"])
+                suggested = next_experiment_number(branch)
+                new_id = normalize_experiment_id(
+                    ask_text(
+                        "New experiment number",
+                        str(suggested),
+                    )
+                )
+                role_token = role
+                if role == "client" and config.get("execution", {}).get("deployment") == "federated":
+                    role_token = str(config.get("federated", {}).get("client_id", "client_1"))
+                apply_hierarchical_layout(
+                    config,
+                    root=experiment.get("results_root", "experiments/results"),
+                    experiment_id=new_id,
+                    role_token=role_token,
+                )
+            elif experiment.get("layout_version") == "1.0" and role == "proxy":
+                new_locator = ask_text(
+                    "New coordinated storage locator from the server",
+                    "",
+                ).strip()
+                if not new_locator:
+                    raise KeyboardInterrupt
+                apply_proxy_locator_layout(
+                    config,
+                    root=experiment.get("results_root", "experiments/results"),
+                    locator=new_locator,
+                )
+            else:
+                new_id = ask_text(
+                    "New experiment ID; use auto for a timestamped ID",
+                    "auto",
+                ).strip()
+                if not new_id or new_id == "auto":
+                    new_id = generate_experiment_id()
+                config["experiment"]["experiment_id"] = new_id
             continue
 
         if action == "archive_existing_run":
@@ -156,24 +275,6 @@ def interactive_configure(
     forced_role: str | None = None,
 ) -> Dict[str, Any]:
     config = copy.deepcopy(DEFAULT_CONFIG)
-
-    while True:
-        coordinated_id = ask_text(
-            "Coordinated experiment ID; enter the SAME value on server, "
-            "all clients, and proxy",
-            "",
-        ).strip()
-        if coordinated_id and coordinated_id.lower() != "auto":
-            break
-        print(
-            "A non-auto coordinated experiment ID is required for "
-            "networked experiments."
-        )
-    config["experiment"]["experiment_id"] = coordinated_id
-    config["experiment"]["output_dir"] = ask_text(
-        "Experiment output directory",
-        "experiments/results",
-    )
 
     task = choose("Select experiment task", registry.EXECUTION_TASKS)
     config["execution"]["task"] = task
@@ -319,17 +420,30 @@ def interactive_configure(
         )
     config["device"]["operating_system"] = operating_system
 
-    default_host = "0.0.0.0" if role == "server" else "127.0.0.1"
     if deployment != "local":
-        config["node"]["host"] = ask_text(
-            (
-                "Listen host"
-                if role == "server"
-                else "Remote endpoint IP or hostname (server or proxy)"
-            ),
-            default_host,
-        )
-        config["node"]["port"] = ask_int("Port", 5000)
+        if role == "server":
+            config["node"]["host"] = ask_text(
+                "FL server bind IP",
+                "10.42.0.195",
+            )
+            config["node"]["port"] = ask_int(
+                "FL server port",
+                8080,
+            )
+        else:
+            config["node"]["host"] = ask_text(
+                "Remote endpoint IP or hostname (proxy)",
+                "10.42.0.1",
+            )
+            config["node"]["port"] = ask_int(
+                "Proxy port",
+                8080,
+            )
+            print(
+                "Network path: Client -> "
+                f"{config['node']['host']}:{config['node']['port']} (Proxy) "
+                "-> 10.42.0.195:8080 (FL Server)"
+            )
 
         # TLS is presented first for new network experiments. TCP remains
         # available for controlled baseline/debug runs.
@@ -412,11 +526,27 @@ def interactive_configure(
         }
         else 224
     )
-    config["ai"]["input_size"] = ask_int(
-        "Image input size",
-        default_input_size,
+    federated_client = (
+        task == "training"
+        and deployment == "federated"
+        and role == "client"
     )
-    config["execution"]["batch_size"] = ask_int("Batch size", 1)
+
+    # For controlled FL experiments the server is the single authority for
+    # model/training-shape controls. A client receives these six values during
+    # the FL handshake rather than independently typing them.
+    if not federated_client:
+        config["ai"]["input_size"] = ask_int(
+            "Image input size",
+            default_input_size,
+        )
+        config["execution"]["batch_size"] = ask_int("Batch size", 1)
+    else:
+        print(
+            "Federated training policy will be received from the server: "
+            "input size, batch size, learning rate, global rounds, "
+            "local epochs, and local steps."
+        )
 
     if task == "inference":
         config["execution"]["repetitions"] = ask_int("Repetitions", 20)
@@ -426,16 +556,19 @@ def interactive_configure(
             250,
         )
     else:
-        config["execution"]["learning_rate"] = float(
-            ask_text("Learning rate", "0.001")
-        )
         if deployment in {"local", "remote"}:
+            config["execution"]["learning_rate"] = float(
+                ask_text("Learning rate", "0.001")
+            )
             config["execution"]["epochs"] = ask_int("Training epochs", 1)
             config["execution"]["steps_per_epoch"] = ask_int(
                 "Training steps per epoch",
                 20,
             )
-        else:
+        elif role == "server":
+            config["execution"]["learning_rate"] = float(
+                ask_text("Learning rate", "0.001")
+            )
             config["federated"]["rounds"] = ask_int(
                 "Federated rounds",
                 10,
@@ -448,16 +581,41 @@ def interactive_configure(
                 "Local steps per epoch",
                 10,
             )
-            if role == "server":
-                config["federated"]["expected_clients"] = ask_int(
-                    "Expected clients",
-                    2,
+            config["federated"]["expected_clients"] = ask_int(
+                "Expected clients",
+                2,
+            )
+            config["federated"]["policy_source"] = "server"
+        else:
+            config["federated"]["client_id"] = ask_text(
+                "Federated client ID",
+                "client_1",
+            )
+            config["federated"]["policy_source"] = "server"
+
+    if task == "training" and deployment == "federated":
+        performance_enabled = ask_yes_no(
+            "Log per-round training performance",
+            True,
+        )
+        config["performance_logging"]["enabled"] = performance_enabled
+        if performance_enabled:
+            if role == "client":
+                config["performance_logging"]["client_round_probe"] = ask_yes_no(
+                    "Evaluate one held-out probe batch before/after each local round",
+                    True,
                 )
-            else:
-                config["federated"]["client_id"] = ask_text(
-                    "Federated client ID",
-                    "client_1",
+            elif role == "server":
+                config["performance_logging"]["server_eval_batches"] = ask_int(
+                    "Global evaluation batches after each federated round",
+                    10,
                 )
+                config["performance_logging"]["server_eval_split"] = ask_text(
+                    "Global evaluation dataset split",
+                    "test",
+                ).strip().lower()
+
+    _configure_experiment_storage(config, role)
 
     monitor_enabled = ask_yes_no(
         "Enable client/server resource telemetry",
@@ -469,11 +627,9 @@ def interactive_configure(
             "Resource telemetry interval in milliseconds",
             500,
         )
-        interface = ask_text(
-            "Network interface for byte counters; leave blank for all",
-            "",
+        config["resource_monitor"]["network_interface"] = (
+            _auto_resource_interface(config)
         )
-        config["resource_monitor"]["network_interface"] = interface or None
         config["resource_monitor"]["gpu_index"] = ask_int(
             "NVIDIA GPU index",
             0,
@@ -489,39 +645,53 @@ def interactive_configure(
 def interactive_proxy_configure() -> Dict[str, Any]:
     config = copy.deepcopy(DEFAULT_PROXY_CONFIG)
 
-    while True:
-        experiment_id = ask_text(
-            "Coordinated experiment ID; enter the SAME value used by "
-            "the server and all clients",
-            "",
-        ).strip()
-        if experiment_id and experiment_id.lower() != "auto":
-            break
-        print(
-            "A non-auto coordinated experiment ID is required for "
-            "the proxy."
-        )
-    config["experiment"]["experiment_id"] = experiment_id
-    config["experiment"]["output_dir"] = ask_text(
-        "Proxy output directory",
+    results_root = ask_text(
+        "Experiment results root",
         "experiments/results",
     )
+    while True:
+        locator = ask_text(
+            "Coordinated experiment storage locator; paste the value "
+            "printed by the server",
+            "",
+        ).strip()
+        if locator:
+            break
+        print(
+            "The storage locator is required so proxy output is placed "
+            "under the same family/architecture/variant/application/"
+            "dataset/framework/expN hierarchy."
+        )
+    apply_proxy_locator_layout(
+        config,
+        root=results_root,
+        locator=locator,
+    )
+    print(f"Coordinated experiment ID: {config['experiment']['experiment_id']}")
+    print(f"Proxy output directory: {config['experiment']['output_dir']}")
 
     config["proxy"]["listen_host"] = ask_text(
-        "Proxy listen host",
-        "0.0.0.0",
+        "Proxy listen IP",
+        "10.42.0.1",
     )
     config["proxy"]["listen_port"] = ask_int(
         "Proxy listen port",
-        5000,
+        8080,
     )
     config["proxy"]["upstream_host"] = ask_text(
-        "Real upstream server IP or hostname",
-        "127.0.0.1",
+        "FL server upstream IP",
+        "10.42.0.195",
     )
     config["proxy"]["upstream_port"] = ask_int(
-        "Real upstream server port",
-        5000,
+        "FL server upstream port",
+        8080,
+    )
+    print(
+        "Network path: Clients -> "
+        f"{config['proxy']['listen_host']}:{config['proxy']['listen_port']} "
+        "(Proxy) -> "
+        f"{config['proxy']['upstream_host']}:{config['proxy']['upstream_port']} "
+        "(FL Server)"
     )
 
     capture_enabled = ask_yes_no(
@@ -531,10 +701,6 @@ def interactive_proxy_configure() -> Dict[str, Any]:
     config["capture"]["enabled"] = capture_enabled
 
     if capture_enabled:
-        config["capture"]["interface"] = ask_text(
-            "Client-facing capture interface",
-            "wlan0",
-        )
         config["capture"]["snaplen_bytes"] = ask_int(
             "PCAP snapshot length in bytes; 0 stores full frames",
             256,
@@ -564,59 +730,39 @@ def interactive_proxy_configure() -> Dict[str, Any]:
                 "restore_on_exit"
             ] = True
 
-        while True:
-            client_text = ask_text(
-                "Participating client IPs for capture isolation "
-                "(comma-separated)",
-                "",
-            )
-            client_ips = [
-                value.strip()
-                for value in client_text.split(",")
-                if value.strip()
-            ]
-            if client_ips:
-                break
-            print(
-                "At least one client IP is required. This prevents "
-                "capturing the proxy-to-upstream duplicate leg."
-            )
-
+        # v0.9.2: participating clients are discovered automatically from
+        # actual proxy connections. The archival/live capture filter excludes
+        # the known upstream FL server, and discovered peer IPs are used only
+        # for post-capture grouping/isolation (never as classifier features).
         config["capture"]["client_ip"] = None
-        config["capture"]["client_ips"] = list(
-            dict.fromkeys(client_ips)
+        config["capture"]["client_ips"] = []
+        config["capture"]["client_aliases"] = {}
+        config["capture"]["client_discovery_mode"] = "automatic"
+        print(
+            "Participating client discovery: automatic "
+            "(from accepted proxy connections)."
+        )
+        print(
+            "Upstream FL server excluded from capture: "
+            f"{config['proxy']['upstream_host']}"
         )
 
-        alias_text = ask_text(
-            "Optional capture aliases as IP=alias pairs. Leave blank to "
-            "use neutral trace IDs; FL client IDs are auto-resolved later "
-            "from client network-registration ground truth",
-            "",
-        )
-        aliases: Dict[str, str] = {}
-        if alias_text:
-            for piece in alias_text.split(","):
-                piece = piece.strip()
-                if not piece:
-                    continue
-                if "=" not in piece:
-                    raise ValueError(
-                        "Client aliases must use IP=client_id syntax"
-                    )
-                ip, alias = piece.split("=", 1)
-                ip = ip.strip()
-                alias = alias.strip()
-                if ip not in config["capture"]["client_ips"]:
-                    raise ValueError(
-                        f"Alias IP {ip!r} is not in the configured "
-                        "client IP list"
-                    )
-                if not alias:
-                    raise ValueError(
-                        f"Empty client alias for {ip!r}"
-                    )
-                aliases[ip] = alias
-        config["capture"]["client_aliases"] = aliases
+        listen_ip = str(config["proxy"].get("listen_host", "")).strip()
+        detection = None
+        if listen_ip and listen_ip not in {"0.0.0.0", "::"}:
+            detection = detect_local_interface(listen_ip)
+        if detection is not None:
+            config["capture"]["interface"] = detection.interface
+            detail = f" ({detection.local_ip})" if detection.local_ip else ""
+            print(
+                f"Automatically detected client-facing capture interface: "
+                f"{detection.interface}{detail} [{detection.method}]"
+            )
+        else:
+            config["capture"]["interface"] = _select_interface_fallback(
+                "Automatic capture-interface detection was inconclusive; "
+                "select the client-facing interface"
+            )
 
         config["capture"]["per_client_artifacts"] = ask_yes_no(
             "Generate separate classifier-safe sequence/features per client",
@@ -628,26 +774,57 @@ def interactive_proxy_configure() -> Dict[str, Any]:
             True,
         )
 
-        window_text = ask_text(
-            "Feature window scales in seconds, comma-separated",
-            "0.5,1,2,5",
+        use_default_scales = ask_yes_no(
+            "Use default multi-scale fingerprinting windows "
+            "(0.5 s, 1 s, 2 s, 5 s)",
+            True,
         )
-        window_sizes = sorted(
-            {
-                float(value.strip())
-                for value in window_text.split(",")
-                if value.strip()
-            }
-        )
-        if not window_sizes or any(
-            value <= 0 for value in window_sizes
-        ):
-            raise ValueError(
-                "At least one positive feature window scale is required"
+        if use_default_scales:
+            window_sizes = [0.5, 1.0, 2.0, 5.0]
+            config["capture"]["allow_single_scale"] = False
+        else:
+            window_choice = choose(
+                "Select window configuration",
+                [
+                    "0.5_seconds_only",
+                    "1_second_only",
+                    "2_seconds_only",
+                    "5_seconds_only",
+                    "custom",
+                ],
             )
+            preset = {
+                "0.5_seconds_only": [0.5],
+                "1_second_only": [1.0],
+                "2_seconds_only": [2.0],
+                "5_seconds_only": [5.0],
+            }
+            if window_choice == "custom":
+                window_text = ask_text(
+                    "Custom feature window scales in seconds, comma-separated",
+                    "0.5,1,2,5",
+                )
+                window_sizes = sorted(
+                    {
+                        float(value.strip())
+                        for value in window_text.split(",")
+                        if value.strip()
+                    }
+                )
+            else:
+                window_sizes = preset[window_choice]
+            if not window_sizes or any(value <= 0 for value in window_sizes):
+                raise ValueError(
+                    "At least one positive feature window scale is required"
+                )
+            config["capture"]["allow_single_scale"] = len(window_sizes) == 1
         config["capture"]["window_sizes_sec"] = window_sizes
         # Keep the largest scale in the legacy field for older utilities.
         config["capture"]["window_seconds"] = max(window_sizes)
+        print(
+            "Fingerprinting window scales: "
+            + ", ".join(f"{value:g} s" for value in window_sizes)
+        )
 
         inference_enabled = ask_yes_no(
             "Enable architecture fingerprinting "
@@ -727,6 +904,26 @@ def interactive_proxy_configure() -> Dict[str, Any]:
     return config
 
 
+def _run_proxy_with_status(config: Dict[str, Any]) -> Dict[str, Any]:
+    materialize_role_metadata(config)
+    write_role_status(config, "RUNNING")
+    try:
+        result = BlindTCPProxy(config).serve_forever()
+    except KeyboardInterrupt:
+        write_role_status(config, "STOPPED")
+        raise
+    except Exception as exc:
+        write_role_status(
+            config,
+            "FAILED",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+    else:
+        write_role_status(config, "COMPLETE")
+        return result
+
+
 def run_interactive_proxy() -> None:
     output = "proxy_config.yaml"
     config = interactive_proxy_configure()
@@ -751,7 +948,7 @@ def run_interactive_proxy() -> None:
     save_proxy_config(config, output)
 
     print(f"Proxy configuration saved to {output}")
-    BlindTCPProxy(config).serve_forever()
+    _run_proxy_with_status(config)
 
 def print_dataset_table() -> None:
     header = (
@@ -1096,7 +1293,7 @@ def main() -> None:
 
         if args.command == "proxy":
             config = load_proxy_config(args.config)
-            BlindTCPProxy(config).serve_forever()
+            _run_proxy_with_status(config)
             return
 
         if args.command == "capture":
@@ -1193,6 +1390,7 @@ def main() -> None:
         ConfigError,
         DatasetError,
         ExistingExperimentError,
+        ExperimentLayoutError,
         FeatureExtractionError,
         ProxyError,
         KeyError,

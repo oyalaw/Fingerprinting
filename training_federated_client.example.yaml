@@ -1,10 +1,11 @@
 experiment:
-  experiment_id: EXP_FEDERATED_TRAINING_001
-  output_dir: experiments/results
+  experiment_id: exp1
+  results_root: experiments/results
+  output_dir: experiments/results/cnn/resnet/resnet18/image_classification/cifar10/pytorch/exp1/client_1
 node:
   role: client
-  host: 192.168.137.10
-  port: 5000
+  host: 10.42.0.1
+  port: 8080
 transport:
   kind: tls
   certfile: null
@@ -56,6 +57,12 @@ execution:
 device:
   label: android_phone
   operating_system: android
+performance_logging:
+  enabled: true
+  client_round_probe: true
+  server_eval_batches: 10
+  server_eval_split: test
+  server_evaluation_required: false
 resource_monitor:
   enabled: true
   interval_ms: 500

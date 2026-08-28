@@ -131,7 +131,16 @@ def test_blind_proxy_forwards_bytes(tmp_path):
     assert (tmp_path / "PROXY_TEST_proxy_summary.json").exists()
 
 
-def test_capture_requires_client_ips_when_enabled():
+def test_capture_auto_discovery_allows_empty_client_ips():
+    config = copy.deepcopy(DEFAULT_PROXY_CONFIG)
+    config["capture"]["interface"] = "wlan0"
+    config["capture"]["client_ip"] = None
+    config["capture"]["client_ips"] = []
+    config["capture"]["client_discovery_mode"] = "automatic"
+    validate_proxy_config(config)
+
+
+def test_capture_manual_discovery_requires_client_ips():
     import pytest
     from ai_fingerprint.proxy import ProxyError
 
@@ -139,6 +148,7 @@ def test_capture_requires_client_ips_when_enabled():
     config["capture"]["interface"] = "wlan0"
     config["capture"]["client_ip"] = None
     config["capture"]["client_ips"] = []
+    config["capture"]["client_discovery_mode"] = "manual"
     with pytest.raises(ProxyError, match="client_ips is required"):
         validate_proxy_config(config)
 

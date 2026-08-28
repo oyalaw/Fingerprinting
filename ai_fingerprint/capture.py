@@ -20,6 +20,7 @@ def build_capture_filter(
     host: Optional[str] = None,
     port: Optional[int] = None,
     hosts: Optional[Sequence[str]] = None,
+    exclude_hosts: Optional[Sequence[str]] = None,
 ) -> str:
     """Build a BPF capture filter.
 
@@ -53,6 +54,18 @@ def build_capture_filter(
 
     if port:
         terms.append(f"port {int(port)}")
+
+    normalized_excludes = []
+    if exclude_hosts:
+        normalized_excludes.extend(
+            str(value).strip()
+            for value in exclude_hosts
+            if str(value).strip()
+        )
+    normalized_excludes = list(dict.fromkeys(normalized_excludes))
+    for value in normalized_excludes:
+        terms.append(f"not host {value}")
+
     return " and ".join(terms)
 
 
@@ -133,6 +146,7 @@ def start_capture_process(
     host: Optional[str] = None,
     port: Optional[int] = None,
     hosts: Optional[Sequence[str]] = None,
+    exclude_hosts: Optional[Sequence[str]] = None,
     snaplen_bytes: Optional[int] = None,
 ) -> subprocess.Popen:
     dumpcap = shutil.which("dumpcap")
@@ -162,7 +176,12 @@ def start_capture_process(
         # uses frame.len/timing/direction rather than encrypted payload bytes.
         command.extend(["-s", str(int(snaplen_bytes))])
 
-    capture_filter = build_capture_filter(host=host, port=port, hosts=hosts)
+    capture_filter = build_capture_filter(
+        host=host,
+        port=port,
+        hosts=hosts,
+        exclude_hosts=exclude_hosts,
+    )
     if capture_filter:
         command.extend(["-f", capture_filter])
 

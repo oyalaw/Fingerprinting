@@ -1,10 +1,28 @@
 # AI Fingerprinting Experiment Codebase
 
-Version 0.8.8 preserves attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
+Version 0.8.9 preserves attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
 
 The same repository supports client execution, server execution, proxy capture, real dataset loading, and ground truth logging.
 
 The attacker facing fingerprinting pipeline uses only network observable information. Framework, runtime, family, architecture, application, dataset, and device labels remain in local client and server ground truth logs and are intentionally excluded from the proxy manifest.
+
+## Experiment automation and testbed defaults (v0.8.9)
+
+Interactive experiments are now stored under:
+
+```text
+experiments/results/
+<family>/<architecture>/<variant>/<application>/<dataset>/<framework>/expN/<role>/
+```
+
+`expN` is local to that exact hierarchy branch and defaults to one greater than the highest existing experiment number. The server prints a coordinated storage locator; clients use the same experiment number, and the proxy pastes the locator as operator-only filesystem metadata. Proxy predictor rows remain label-free.
+
+The normal testbed defaults are `10.42.0.1:8080` for the proxy and `10.42.0.195:8080` for the FL server. Press Enter to accept them. Client/server resource interfaces and the proxy capture interface are detected automatically from the active route/local IP, with a numbered interface menu only when detection is ambiguous.
+
+The default proxy capture now uses 0.5/1/2/5-second windows without typing a comma-separated list. A single-scale choice is available only when intentionally running an ablation.
+
+Federated clients and servers now exchange a model-contract fingerprint before global weights are sent. A family/architecture/variant/tensor-shape mismatch is rejected with a clear contract error instead of failing later inside `set_parameters()`.
+
 
 
 
@@ -1274,3 +1292,38 @@ python main.py run --config training_federated_client.example.yaml
 
 Copy the client configuration for additional clients and change only the
 client ID, device label, dataset partition, and server address as appropriate.
+
+## v0.9.0 per-round learning-performance logs
+
+Federated clients and the server can now record task-aware learning performance for every FL round. Client role directories contain `round_metrics.csv`; the server role directory contains both `round_metrics.csv` and `client_update_metrics.csv`.
+
+Classification workloads record loss, accuracy, macro precision, macro recall, and macro F1. Reconstruction/autoencoder workloads record total/reconstruction loss, MSE, MAE, and VAE KL/beta when applicable. Client logs also record download/training/upload/synchronization timing, model size, model norms, and local update norm. Server logs add post-aggregation global evaluation, aggregation/evaluation time, client participation, global update norm, per-round bytes, and convergence deltas.
+
+The default server evaluation uses 10 batches from the `test` split and resets the evaluation iterator every round so the same evaluation samples are used for the convergence trajectory. These metrics are ground truth/system characterization and are forbidden from proxy predictor inputs.
+
+See `V0_9_0_ROUND_PERFORMANCE_LOGGING.md` for the schema and behavior.
+
+## v0.9.1 server-authoritative FL training policy
+
+For controlled federated experiments, the server is now the single authority
+for input size, batch size, learning rate, global rounds, local epochs, and
+local steps. Federated clients no longer prompt for these six values. They
+request a versioned server policy before constructing the dataset generator or
+workload, apply it locally, and include its digest in subsequent FL requests.
+The server rejects stale/mismatched policies. Clients execute rounds until the
+server explicitly reports completion rather than stopping on a local round
+counter.
+
+Each client writes `server_training_policy.json` and `config_effective.yaml` so
+the exact policy actually executed is preserved. See
+`V0_9_1_SERVER_AUTHORITATIVE_FL_POLICY.md`.
+
+## v0.9.2 automatic proxy client discovery
+
+Normal proxy runs no longer require the operator to type participating client IPs. With the default testbed topology, the proxy captures only traffic involving its client-facing endpoint/port while excluding the known upstream FL server:
+
+```text
+host 10.42.0.1 and port 8080 and not host 10.42.0.195
+```
+
+Clients are discovered from actual accepted proxy connections and assigned neutral aliases such as `trace_001` and `trace_002`. The same mapping is used by live multiscale inference and final per-client extraction. IPs/aliases remain isolation metadata and are excluded from classifier-ready features. Manual client-IP allow-lists remain available in configuration with `capture.client_discovery_mode: manual`. See `V0_9_2_AUTOMATIC_PROXY_CLIENT_DISCOVERY.md`.

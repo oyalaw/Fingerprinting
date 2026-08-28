@@ -1,5 +1,5 @@
 AI Fingerprinting Label-Blind Proxy
-Schema version 1.1
+Schema version 1.2
 
 Purpose
 -------
@@ -30,11 +30,10 @@ proxy:
 capture:
   enabled: true
   interface: wlan0
-  client_ips:
-    - 10.42.0.47
-    - 10.42.0.210
-  # Optional. Neutral trace IDs are generated when omitted. For new FL
-  # runs, prepare_fingerprinting_dataset.py resolves the actual client_id
+  client_discovery_mode: automatic
+  client_ips: []
+  # Optional/manual override. Neutral trace IDs are generated when omitted.
+  # For new FL runs, prepare_fingerprinting_dataset.py resolves the actual client_id
   # automatically from network-registration ground truth.
   client_aliases: {}
   strict_client_isolation: true
@@ -70,21 +69,24 @@ An inline application proxy creates two TCP legs:
 client <-> proxy
 proxy <-> real server
 
-Capturing both legs duplicates the same application byte stream and can invert
-direction semantics on the upstream leg. Therefore strict client isolation is
-enabled by default.
+Capturing both legs duplicates the same application byte stream. In automatic
+discovery mode, client IPs do not need to be known before capture. With the
+default topology, the archival and live BPF is:
 
-For two clients and proxy listen port 8080, the capture BPF is:
+host 10.42.0.1 and port 8080 and not host 10.42.0.195
 
-(host 10.42.0.47 or host 10.42.0.210) and port 8080
+The proxy then discovers actual participating client IPs from accepted
+connections (and the live metadata stream), assigns neutral trace aliases, and
+uses those discovered IPs for post-capture per-client isolation. Endpoint
+identity is never included in classifier-safe predictor rows.
 
-The upstream server IP is not in that filter, so proxy-to-server packets are
-not captured as a second copy.
+For a restricted diagnostic run, set client_discovery_mode: manual and provide
+client_ips explicitly; the legacy host allow-list BPF is retained.
 
 Multi-client artifacts
 ----------------------
 The proxy retains one combined raw trace for audit and automatically generates
-separate classifier-safe artifacts for each configured client:
+separate classifier-safe artifacts for each discovered/configured client:
 
 <experiment_id>__<client_alias>_fingerprint_sequence.csv
 <experiment_id>__<client_alias>_features.csv
@@ -95,9 +97,9 @@ analysis and is marked classifier-ineligible in the manifest.
 
 Windowing
 ---------
-By default, feature extraction writes an overall row plus 5-second windows.
-Set capture.window_seconds to another positive value as needed, or null for an
-overall-only feature file. All windows from the same experiment must remain in
+By default, feature extraction uses the multiscale set 0.5, 1, 2, and 5 seconds
+plus an overall row. `window_seconds` is retained for legacy/single-scale
+compatibility. All windows from the same independent experiment must remain in
 the same train/validation/test group.
 
 TCP flags

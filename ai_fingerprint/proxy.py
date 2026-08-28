@@ -15,6 +15,7 @@ import yaml
 
 from .capture import (
     CaptureError,
+    build_capture_filter,
     inspect_capture_interface,
     start_capture_process,
     stop_capture_process,
@@ -36,13 +37,15 @@ DEFAULT_PROXY_CONFIG: Dict[str, Any] = {
     "experiment": {
         "experiment_id": "auto",
         "output_dir": "experiments/results",
+        "results_root": "experiments/results",
+        "storage_locator": None,
         "existing_output_policy": "error",
     },
     "proxy": {
-        "listen_host": "0.0.0.0",
-        "listen_port": 5000,
-        "upstream_host": "127.0.0.1",
-        "upstream_port": 5001,
+        "listen_host": "10.42.0.1",
+        "listen_port": 8080,
+        "upstream_host": "10.42.0.195",
+        "upstream_port": 8080,
         "connect_timeout_sec": 30,
         "buffer_size": 65536,
         # recv() chunk boundaries are not packets. Keep only aggregate
@@ -59,6 +62,10 @@ DEFAULT_PROXY_CONFIG: Dict[str, Any] = {
         # Optional mapping such as {"10.42.0.47": "client_1"}.
         # Aliases are grouping metadata, never predictor features.
         "client_aliases": {},
+        # Automatic mode discovers participating clients from accepted proxy
+        # connections while the BPF excludes the known upstream FL server.
+        # Manual mode retains the legacy allow-list behavior.
+        "client_discovery_mode": "automatic",
         "strict_client_isolation": True,
         "per_client_artifacts": True,
         # Store only the first bytes of each frame to keep PCAPs manageable.
@@ -208,16 +215,32 @@ def validate_proxy_config(config: Dict[str, Any]) -> None:
         )
         client_ips = list(dict.fromkeys(client_ips))
 
+        discovery_mode = str(
+            capture.get("client_discovery_mode", "automatic")
+        ).strip().lower()
+        if discovery_mode not in {"automatic", "manual"}:
+            raise ProxyError(
+                "capture.client_discovery_mode must be automatic or manual"
+            )
         if (
-            bool(capture.get("strict_client_isolation", True))
+            discovery_mode == "manual"
+            and bool(capture.get("strict_client_isolation", True))
             and not client_ips
         ):
             raise ProxyError(
-                "capture.client_ips is required when capture is enabled. "
-                "Specify every participating client IP so the BPF filter "
-                "captures only client-facing traffic and excludes the "
-                "proxy-to-upstream duplicate leg."
+                "capture.client_ips is required when "
+                "capture.client_discovery_mode=manual. In automatic mode "
+                "the proxy discovers client IPs from accepted connections "
+                "and excludes the configured upstream server from capture."
             )
+
+        if discovery_mode == "automatic":
+            upstream_host = str(proxy.get("upstream_host", "")).strip()
+            if not upstream_host:
+                raise ProxyError(
+                    "proxy.upstream_host is required for automatic client "
+                    "discovery so the upstream duplicate leg can be excluded"
+                )
 
         aliases = capture.get("client_aliases", {}) or {}
         if not isinstance(aliases, dict):
@@ -230,7 +253,7 @@ def validate_proxy_config(config: Dict[str, Any]) -> None:
             for ip in aliases
             if str(ip) not in client_ips
         )
-        if unknown_alias_ips:
+        if discovery_mode == "manual" and unknown_alias_ips:
             raise ProxyError(
                 "capture.client_aliases contains IPs not listed in "
                 f"capture.client_ips: {unknown_alias_ips}"
@@ -455,6 +478,15 @@ class BlindTCPProxy:
         self._down_bytes = 0
         self._forward_rows = 0
 
+        self._discovered_client_ips: list[str] = []
+        self._discovered_client_aliases: Dict[str, str] = {}
+        for ip in self._configured_client_ips():
+            self._register_discovered_client(
+                ip,
+                source="configured",
+                notify_monitor=False,
+            )
+
     def _configured_client_ips(self) -> list[str]:
         capture = self.config.get("capture", {})
         values: list[str] = []
@@ -470,6 +502,79 @@ class BlindTCPProxy:
             if str(value).strip()
         )
         return list(dict.fromkeys(values))
+
+    def _client_discovery_mode(self) -> str:
+        return str(
+            self.config.get("capture", {}).get(
+                "client_discovery_mode", "automatic"
+            )
+        ).strip().lower()
+
+    def _capture_client_ips(self) -> list[str]:
+        with self._lock:
+            values = list(self._discovered_client_ips)
+        if not values:
+            values = self._configured_client_ips()
+        return values
+
+    def _capture_client_aliases(self) -> Dict[str, str]:
+        with self._lock:
+            return dict(self._discovered_client_aliases)
+
+    def _register_discovered_client(
+        self,
+        client_ip: str,
+        *,
+        source: str,
+        notify_monitor: bool = True,
+    ) -> str:
+        value = str(client_ip).strip()
+        if not value:
+            raise ProxyError("Discovered client IP is empty")
+
+        upstream_host = str(
+            self.config.get("proxy", {}).get("upstream_host", "")
+        ).strip()
+        listen_host = str(
+            self.config.get("proxy", {}).get("listen_host", "")
+        ).strip()
+        if value in {upstream_host, listen_host}:
+            return ""
+
+        created = False
+        with self._lock:
+            existing = self._discovered_client_aliases.get(value)
+            if existing:
+                alias = existing
+            else:
+                configured_alias = str(
+                    (self.config.get("capture", {}).get(
+                        "client_aliases", {}
+                    ) or {}).get(value, "")
+                ).strip()
+                alias = configured_alias or (
+                    f"trace_{len(self._discovered_client_ips) + 1:03d}"
+                )
+                self._discovered_client_ips.append(value)
+                self._discovered_client_aliases[value] = alias
+                created = True
+
+        if created:
+            print(
+                f"[proxy] discovered client {value} -> {alias} "
+                f"[{source}]"
+            )
+
+        monitor = self._live_architecture_monitor
+        if notify_monitor and monitor is not None and alias:
+            try:
+                monitor.register_client(value, alias=alias)
+            except Exception as exc:
+                print(
+                    f"[proxy] WARNING: live monitor could not register "
+                    f"client {value}: {type(exc).__name__}: {exc}"
+                )
+        return alias
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -498,6 +603,14 @@ class BlindTCPProxy:
             if bool(capture.get("enabled", True)):
                 interface = str(capture["interface"])
                 client_ips = self._configured_client_ips()
+                automatic_discovery = (
+                    self._client_discovery_mode() == "automatic"
+                )
+                exclude_hosts = (
+                    [str(self.config["proxy"]["upstream_host"])]
+                    if automatic_discovery
+                    else []
+                )
                 offload_cfg = (
                     capture.get("offload_management", {}) or {}
                 )
@@ -546,6 +659,26 @@ class BlindTCPProxy:
                 self._capture_preflight[
                     "offload_management"
                 ] = offload_report
+                self._capture_preflight["client_discovery_mode"] = (
+                    self._client_discovery_mode()
+                )
+                self._capture_preflight["capture_filter"] = build_capture_filter(
+                    host=(
+                        str(self.config["proxy"].get("listen_host", ""))
+                        if (
+                            automatic_discovery
+                            and str(
+                                self.config["proxy"].get("listen_host", "")
+                            ).strip() not in {"", "0.0.0.0", "::"}
+                        )
+                        else None
+                    ),
+                    hosts=(
+                        client_ips if not automatic_discovery else None
+                    ),
+                    port=int(self.config["proxy"]["listen_port"]),
+                    exclude_hosts=exclude_hosts,
+                )
 
                 if self._offload_manager.status == "capture_safe":
                     print(
@@ -572,7 +705,18 @@ class BlindTCPProxy:
                 self._capture_process = start_capture_process(
                     interface=interface,
                     output=str(self.pcap_path),
-                    hosts=client_ips,
+                    host=(
+                        str(self.config["proxy"].get("listen_host", ""))
+                        if (
+                            automatic_discovery
+                            and str(
+                                self.config["proxy"].get("listen_host", "")
+                            ).strip() not in {"", "0.0.0.0", "::"}
+                        )
+                        else None
+                    ),
+                    hosts=(client_ips if not automatic_discovery else None),
+                    exclude_hosts=exclude_hosts,
                     port=int(
                         self.config["proxy"]["listen_port"]
                     ),
@@ -583,6 +727,7 @@ class BlindTCPProxy:
                 self._start_live_architecture_monitor(
                     interface=interface,
                     client_ips=client_ips,
+                    exclude_hosts=exclude_hosts,
                 )
 
             listener = self._create_listener()
@@ -598,6 +743,12 @@ class BlindTCPProxy:
                     f"[proxy] capture interface="
                     f"{capture['interface']} pcap={self.pcap_path}"
                 )
+                if self._client_discovery_mode() == "automatic":
+                    print(
+                        "[proxy] participating-client discovery: automatic; "
+                        f"excluding upstream {self.config['proxy']['upstream_host']} "
+                        "from the capture filter"
+                    )
             print(
                 "[proxy] TLS is forwarded end-to-end without decryption."
             )
@@ -610,6 +761,16 @@ class BlindTCPProxy:
                     continue
 
                 connection_id = uuid.uuid4().hex
+                client_ip = (
+                    str(client_addr[0]).strip()
+                    if isinstance(client_addr, tuple) and client_addr
+                    else str(client_addr).strip()
+                )
+                if self._client_discovery_mode() == "automatic":
+                    self._register_discovered_client(
+                        client_ip,
+                        source="accepted_connection",
+                    )
                 with self._lock:
                     self._connections += 1
 
@@ -659,6 +820,7 @@ class BlindTCPProxy:
         *,
         interface: str,
         client_ips: list[str],
+        exclude_hosts: list[str],
     ) -> None:
         inference = self.config.get(
             "architecture_inference", {}
@@ -686,6 +848,10 @@ class BlindTCPProxy:
                 port=int(
                     self.config["proxy"]["listen_port"]
                 ),
+                proxy_ip=str(
+                    self.config["proxy"].get("listen_host", "")
+                ),
+                exclude_hosts=exclude_hosts,
                 output_dir=self.output_dir,
                 window_sizes_sec=window_sizes,
                 burst_gap_sec=float(
@@ -998,10 +1164,8 @@ class BlindTCPProxy:
                 output_dir=str(self.output_dir),
                 server_ip=server_ip,
                 client_ip=client_ip,
-                client_ips=self._configured_client_ips(),
-                client_aliases=(
-                    capture.get("client_aliases", {}) or {}
-                ),
+                client_ips=self._capture_client_ips(),
+                client_aliases=self._capture_client_aliases(),
                 per_client_artifacts=bool(
                     capture.get("per_client_artifacts", True)
                 ),
@@ -1022,6 +1186,22 @@ class BlindTCPProxy:
                 window_sizes_sec=(
                     capture.get("window_sizes_sec") or None
                 ),
+                capture_isolation_metadata={
+                    "mode": (
+                        "automatic_proxy_connection_discovery"
+                        if self._client_discovery_mode() == "automatic"
+                        else "manual_client_ip_bpf"
+                    ),
+                    "discovery_method": (
+                        "accepted_proxy_connections"
+                        if self._client_discovery_mode() == "automatic"
+                        else "configured_client_ips"
+                    ),
+                    "upstream_server_excluded": str(
+                        self.config["proxy"]["upstream_host"]
+                    ),
+                    "capture_filter_scope": "client_facing_only",
+                },
             )
             result.update(artifacts)
 
@@ -1075,6 +1255,7 @@ class BlindTCPProxy:
         summary = {
             "schema_version": "1.0",
             "experiment_id": self.experiment_id,
+            "storage_locator": self.config.get("experiment", {}).get("storage_locator"),
             "role": "proxy",
             "label_blind": True,
             "tls_termination": False,
@@ -1104,15 +1285,24 @@ class BlindTCPProxy:
                 else None
             ),
             "capture_isolation": {
+                "client_discovery_mode": self._client_discovery_mode(),
                 "client_ips_configured": len(
                     self._configured_client_ips()
                 ),
+                "client_ips_discovered": len(
+                    self._capture_client_ips()
+                ),
+                "discovered_client_ips": self._capture_client_ips(),
+                "client_aliases": self._capture_client_aliases(),
                 "strict_client_isolation": bool(
                     self.config.get("capture", {}).get(
                         "strict_client_isolation", True
                     )
                 ),
                 "capture_filter_scope": "client_facing_only",
+                "upstream_server_excluded": str(
+                    self.config.get("proxy", {}).get("upstream_host", "")
+                ),
             },
             "capture": capture_result,
         }

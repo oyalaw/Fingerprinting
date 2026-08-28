@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Mapping, Tuple
+
+import time
 
 import numpy as np
 
@@ -77,10 +79,18 @@ class SynchronousFedAvgCoordinator:
         workload: Workload,
         rounds: int,
         expected_clients: int,
+        on_round_aggregated: Callable[[
+            int,
+            Mapping[str, ClientUpdate],
+            List[np.ndarray],
+            List[np.ndarray],
+            float,
+        ], None] | None = None,
     ) -> None:
         self.workload = workload
         self.rounds = int(rounds)
         self.expected_clients = int(expected_clients)
+        self.on_round_aggregated = on_round_aggregated
 
         self._condition = threading.Condition()
         self._round = 0
@@ -140,12 +150,34 @@ class SynchronousFedAvgCoordinator:
             )
 
             if len(round_updates) == self.expected_clients:
+                previous_global = [
+                    value.copy() for value in self._global_parameters
+                ]
+                aggregation_start = time.perf_counter_ns()
                 self._global_parameters = fedavg(
                     list(round_updates.values())
                 )
                 self.workload.set_parameters(
                     self._global_parameters
                 )
+                aggregation_end = time.perf_counter_ns()
+                aggregation_time_ms = (
+                    aggregation_end - aggregation_start
+                ) / 1_000_000.0
+
+                # The callback intentionally runs before synchronous clients
+                # are released. This makes server-side global evaluation an
+                # explicit, measured part of the round rather than racing the
+                # next aggregation against a mutable workload.
+                if self.on_round_aggregated is not None:
+                    self.on_round_aggregated(
+                        round_index,
+                        dict(round_updates),
+                        previous_global,
+                        [value.copy() for value in self._global_parameters],
+                        aggregation_time_ms,
+                    )
+
                 self._round += 1
                 self._condition.notify_all()
             else:

@@ -26,3 +26,6 @@ class InputGenerator:
         self,
     ) -> tuple[np.ndarray, np.ndarray]:
         return self.manager.sample_training_batch()
+
+    def reset(self) -> None:
+        self.manager.reset()

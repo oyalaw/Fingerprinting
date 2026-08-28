@@ -221,3 +221,19 @@ distributions, and burst morphology retain architecture information.
 Windows are correlated observations, not independent experiments. All reported
 generalization metrics must split by independent experiment/run groups. Never
 randomly place windows from the same run in both training and test sets.
+
+
+v0.8.9 storage note: the proxy may receive an operator-supplied filesystem storage locator so its outputs can be placed under the same experiment directory hierarchy. The locator is organizational metadata only; it is never copied into packet-sequence or handcrafted-feature predictor columns and is excluded from X.
+
+v0.9.0 TRAINING-PERFORMANCE ISOLATION
+--------------------------------------
+Per-round learning-performance artifacts are ground truth/system characterization only. The following files and fields MUST NOT enter attacker predictor X:
+
+- client/server round_metrics.csv
+- server client_update_metrics.csv
+- loss, accuracy, precision, recall, F1
+- reconstruction loss, MSE, MAE, KL loss, VAE beta
+- global/local/client model norms and update norms
+- aggregation/evaluation time and convergence deltas
+
+They may be used to analyze convergence, learning utility, round stability, and correlations after fingerprinting predictions have been produced, but they are not proxy-observable traffic features.

@@ -321,7 +321,7 @@ class PyTorchWorkload(Workload):
         self,
         inputs: np.ndarray,
         targets: np.ndarray,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         torch = self.torch
         self.model.train()
 
@@ -342,6 +342,7 @@ class PyTorchWorkload(Workload):
                 targets, dtype=torch.float32, device=self.device
             )
             reconstruction_loss = torch.nn.functional.mse_loss(output, y)
+            mae = torch.mean(torch.abs(output - y))
             kl_loss = getattr(self.model, "last_kl_loss", None)
             beta = float(getattr(self.model, "vae_beta", 1.0))
             if kl_loss is not None:
@@ -349,6 +350,7 @@ class PyTorchWorkload(Workload):
             else:
                 loss = reconstruction_loss
             accuracy = None
+            predictions = None
         else:
             y = torch.as_tensor(
                 targets, dtype=torch.long, device=self.device
@@ -361,13 +363,36 @@ class PyTorchWorkload(Workload):
         self.optimizer.step()
         self.model.eval()
 
-        metrics: Dict[str, float] = {
+        metrics: Dict[str, Any] = {
             "loss": float(loss.detach().cpu().item()),
             "learning_rate": float(self.optimizer.param_groups[0]["lr"]),
+            "samples": int(inputs.shape[0]),
         }
         if accuracy is not None:
             metrics["accuracy"] = accuracy
+            metrics["_targets"] = y.detach().cpu().numpy().astype(np.int64, copy=False)
+            metrics["_predictions"] = (
+                predictions.detach().cpu().numpy().astype(np.int64, copy=False)
+            )
+        else:
+            metrics["reconstruction_loss"] = float(
+                reconstruction_loss.detach().cpu().item()
+            )
+            metrics["mse"] = metrics["reconstruction_loss"]
+            metrics["mae"] = float(mae.detach().cpu().item())
+            if kl_loss is not None:
+                metrics["kl_loss"] = float(kl_loss.detach().cpu().item())
+                metrics["vae_beta"] = beta
         return metrics
+
+    def evaluation_extras(self) -> Dict[str, Any]:
+        kl_loss = getattr(self.model, "last_kl_loss", None)
+        if kl_loss is None:
+            return {}
+        return {
+            "kl_loss": float(kl_loss.detach().cpu().item()),
+            "vae_beta": float(getattr(self.model, "vae_beta", 1.0)),
+        }
 
     def get_parameters(self) -> list[np.ndarray]:
         return [

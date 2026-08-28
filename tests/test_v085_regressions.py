@@ -264,6 +264,9 @@ def test_federated_client_splits_upload_and_sync_wait(monkeypatch, tmp_path):
         def write(self, event, **fields):
             events.append((event, fields))
 
+        def refresh_base(self, config):
+            pass
+
     class Generator:
         def training_batch(self):
             return np.zeros((1, 1), dtype=np.float32), np.zeros(
@@ -300,8 +303,18 @@ def test_federated_client_splits_upload_and_sync_wait(monkeypatch, tmp_path):
         def close(self):
             pass
 
+    from ai_fingerprint.federated_policy import build_training_policy
+    policy = build_training_policy(config)
+
     replies = iter(
         [
+            (
+                {
+                    "status": "ok",
+                    "training_policy": policy,
+                },
+                b"",
+            ),
             (
                 {
                     "status": "ok",
@@ -332,6 +345,11 @@ def test_federated_client_splits_upload_and_sync_wait(monkeypatch, tmp_path):
         client_mod,
         "build_workload",
         lambda config: Workload(),
+    )
+    monkeypatch.setattr(
+        client_mod,
+        "InputGenerator",
+        lambda config: Generator(),
     )
     monkeypatch.setattr(
         obj,

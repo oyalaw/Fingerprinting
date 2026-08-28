@@ -1,4 +1,56 @@
+# 0.9.2
+
+- Removed the normal interactive prompt for comma-separated participating client IPs on the proxy.
+- Added automatic participating-client discovery from actual accepted proxy connections; discovered IPs are grouping/capture-isolation metadata only and never classifier predictors.
+- Tightened automatic archival and live BPF capture to the proxy client-facing endpoint and listen port while explicitly excluding the configured upstream FL server, e.g. `host 10.42.0.1 and port 8080 and not host 10.42.0.195`.
+- Added dynamic live-monitor client registration so real-time 0.5/1/2/5-second features can begin without a pre-entered client allow-list.
+- Added neutral stable aliases (`trace_001`, `trace_002`, ...) as clients are discovered and reused the same mapping for end-of-run per-client artifacts.
+- Automatic capture-interface selection now uses the proxy listen IP first; manual interface selection remains only as an ambiguity fallback.
+- Retained legacy/manual `capture.client_ips` support through `capture.client_discovery_mode: manual` for restricted/diagnostic captures.
+- Extended capture manifests and proxy summaries with discovery method, discovered clients, aliases, excluded upstream server, and the actual BPF filter used.
+
+Validation: 110 automated tests pass, including new automatic-discovery, upstream-exclusion, alias-stability, and live-registration regression tests.
+
+# 0.9.1
+
+- Made the FL server the single authority for six controlled training parameters: input size, batch size, learning rate, global rounds, local epochs per round, and local steps per epoch.
+- Removed those six prompts from federated clients. The client now requests a server training policy immediately after connecting and applies it before creating its dataset generator or workload.
+- Added `fl_policy_get` handshake plus a run-salted policy digest. `fl_get` and `fl_update` are rejected if the client has not applied the current server policy.
+- Changed client global-round control from a local `range(rounds)` loop to server-driven execution until the server explicitly reports `done=True`.
+- Added `server_training_policy.json` and `config_effective.yaml` to client role output so the actual server-issued values are preserved.
+- Added policy identifiers and server-authoritative training controls to per-round client/server performance logs.
+- Prevented pre-handshake client ground truth from falsely reporting placeholder input-size/batch-size values; those fields are marked pending until policy synchronization completes.
+- Added regression tests for policy integrity, server policy delivery, deferred client generator creation, interactive prompt ownership, and server/client policy application.
+
+Validation: 104 automated tests pass. A one-round local end-to-end synchronous FL smoke test also verified that deliberately wrong client placeholder values are overwritten by the server policy before model construction/training.
+
+# 0.9.0
+
+- Added per-round federated client `round_metrics.csv` with task-aware training loss, accuracy/precision/recall/F1 or reconstruction MSE/MAE/KL metrics.
+- Added optional held-out round probe before/after local client training and improvement deltas.
+- Added client/global model L2 norms and true local update norm `||W_i^t-W^t||_2`.
+- Added server `client_update_metrics.csv` with one row per client per round.
+- Added server `round_metrics.csv` after every FedAvg aggregation, including global loss/accuracy/precision/recall/F1, reconstruction metrics, convergence deltas, aggregation/evaluation time, participation, model/update norms and byte totals.
+- Server evaluation resets to the same evaluation samples each round for comparable convergence trajectories.
+- Added interactive defaults for enabling performance logging and choosing server evaluation batches/split.
+- Explicitly forbids training-performance metrics and model/update norms from proxy fingerprinting predictors.
+- Corrected autoencoder real-dataset targets: reconstruction/anomaly/image-denoising workloads now use the input image as the target rather than a dataset class label.
+- Added v0.9.0 regression tests.
+
 # Changelog
+
+## 0.8.9
+
+- Added hierarchical experiment storage: `family/architecture/variant/application/dataset/framework/expN/<role>/`.
+- Added branch-local automatic experiment numbering using `max(existing expN)+1`; deleted/failed numbers are never silently reused.
+- Server/client interactive workflows print a coordinated storage locator; the label-blind proxy accepts that locator only as operator filesystem metadata so its files land under the same experiment hierarchy without entering predictor features.
+- Added role `config.yaml`, `role_manifest.json`, `experiment_status.json`, a common `experiment_manifest.json`, and an `analysis/` directory under each run.
+- Added route-based automatic network-interface detection with local-IP and interactive numbered fallbacks; manual typing of names such as `wlx0013eff408bf` is no longer required during normal runs.
+- Added testbed defaults: client -> proxy `10.42.0.1:8080`, proxy -> FL server `10.42.0.195:8080`, server bind `10.42.0.195:8080`. Pressing Enter accepts them.
+- Changed the normal proxy workflow to one-keystroke multi-scale collection at 0.5/1/2/5 seconds. Single-scale capture remains available only as an explicit ablation choice.
+- Added a federated model-contract fingerprint over hierarchy, model input/class settings, precision, tensor count, shapes, and dtypes. Server rejects mismatched clients before sending global weights, preventing 4-layer/6-layer parameter-count failures from reaching `set_parameters()`.
+
+Validation: 89 automated tests pass.
 
 ## 0.8.8
 

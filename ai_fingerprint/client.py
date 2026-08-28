@@ -11,6 +11,16 @@ from typing import Any, Dict
 import numpy as np
 
 from .datasets import InputGenerator
+from .federated_contract import (
+    build_model_contract,
+    compact_contract,
+    write_model_contract,
+)
+from .federated_policy import (
+    apply_training_policy,
+    write_effective_config,
+    write_received_policy,
+)
 from .metadata import EventLogger
 from .protocol import (
     array_to_bytes,
@@ -22,6 +32,15 @@ from .protocol import (
     training_batch_to_bytes,
 )
 from .resource_monitor import ResourceMonitor
+from .training_metrics import (
+    PerformanceLogWriter,
+    aggregate_batch_metrics,
+    metric_delta,
+    parameter_delta_l2_norm,
+    parameter_l2_norm,
+    scalar_metrics_for_wire,
+    utc_now_iso,
+)
 from .workloads import build_workload
 
 
@@ -29,7 +48,15 @@ class ExperimentClient:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
         self.logger = EventLogger(config)
-        self.generator = InputGenerator(config)
+        is_federated_training = (
+            config.get("execution", {}).get("task") == "training"
+            and config.get("execution", {}).get("deployment") == "federated"
+        )
+        # A federated client must not construct its dataset/workload using
+        # locally guessed training controls. The server sends input size, batch
+        # size, learning rate, global rounds, local epochs and local steps
+        # first; the client applies that policy before creating the generator.
+        self.generator = None if is_federated_training else InputGenerator(config)
 
     def _connect(self) -> socket.socket:
         host = self.config["node"]["host"]
@@ -347,11 +374,7 @@ class ExperimentClient:
 
     def _run_federated_training(self) -> None:
         fed = self.config["federated"]
-        configured_rounds = int(fed["rounds"])
-        local_epochs = int(fed["local_epochs"])
-        steps = int(fed["steps_per_epoch"])
         client_id = str(fed["client_id"])
-        workload = build_workload(self.config)
 
         with self._connect() as sock:
             local_address = sock.getsockname()
@@ -367,7 +390,91 @@ class ExperimentClient:
                 ),
             )
 
-            for _ in range(configured_rounds):
+            # The server is the single authority for the controlled FL
+            # training policy. Clients do not independently configure these
+            # values because that can silently create heterogeneous runs.
+            policy_request_id = uuid.uuid4().hex
+            send_frame(
+                sock,
+                {
+                    "op": "fl_policy_get",
+                    "request_id": policy_request_id,
+                    "experiment_id": str(
+                        self.config["experiment"]["experiment_id"]
+                    ),
+                    "client_id": client_id,
+                },
+            )
+            policy_header, _ = recv_frame(sock)
+            if policy_header.get("status") != "ok":
+                raise RuntimeError(
+                    policy_header.get(
+                        "error",
+                        "failed to receive server federated training policy",
+                    )
+                )
+            policy = policy_header.get("training_policy")
+            if not isinstance(policy, dict):
+                raise RuntimeError(
+                    "Server response is missing federated training_policy"
+                )
+            apply_training_policy(self.config, policy)
+            policy_path = write_received_policy(self.config, policy)
+            effective_config_path = write_effective_config(self.config)
+            self.logger.refresh_base(self.config)
+
+            fed = self.config["federated"]
+            local_epochs = int(fed["local_epochs"])
+            steps = int(fed["steps_per_epoch"])
+            server_rounds = int(fed["rounds"])
+            self.generator = InputGenerator(self.config)
+            workload = build_workload(self.config)
+            model_contract = build_model_contract(
+                self.config,
+                workload.get_parameters(),
+            )
+            write_model_contract(self.config, model_contract)
+            compact_model_contract = compact_contract(model_contract)
+
+            performance_cfg = self.config.get("performance_logging", {})
+            performance_enabled = bool(performance_cfg.get("enabled", True))
+            round_probe_enabled = bool(
+                performance_cfg.get("client_round_probe", True)
+            ) and performance_enabled
+            performance_writer = (
+                PerformanceLogWriter(self.config)
+                if performance_enabled
+                else None
+            )
+
+            print(
+                "[client] server-authoritative FL policy: "
+                f"input_size={self.config['ai']['input_size']} "
+                f"batch_size={self.config['execution']['batch_size']} "
+                f"learning_rate={self.config['execution']['learning_rate']} "
+                f"rounds={server_rounds} local_epochs={local_epochs} "
+                f"steps_per_epoch={steps}"
+            )
+            self.logger.write(
+                "federated_training_policy_received",
+                client_id=client_id,
+                policy_source="server",
+                policy_id=policy.get("policy_id"),
+                input_size=self.config["ai"]["input_size"],
+                batch_size=self.config["execution"]["batch_size"],
+                learning_rate=self.config["execution"]["learning_rate"],
+                total_rounds=server_rounds,
+                local_epochs=local_epochs,
+                steps_per_epoch=steps,
+                policy_json=str(policy_path),
+                effective_config_yaml=str(effective_config_path),
+            )
+
+            # Global-round ownership belongs to the server. Keep asking for
+            # the current global model until the server explicitly returns
+            # done=True; never stop based on a client-local round counter.
+            while True:
+                round_timestamp_start = utc_now_iso()
                 request_id = uuid.uuid4().hex
                 download_start = time.perf_counter_ns()
                 send_frame(
@@ -379,6 +486,8 @@ class ExperimentClient:
                             self.config["experiment"]["experiment_id"]
                         ),
                         "client_id": client_id,
+                        "training_policy_id": str(policy.get("policy_id", "")),
+                        "model_contract": compact_model_contract,
                     },
                 )
                 header, payload = recv_frame(sock)
@@ -396,8 +505,9 @@ class ExperimentClient:
                     break
 
                 round_index = int(header["round"])
-                parameters = bytes_to_arrays(payload)
-                workload.set_parameters(parameters)
+                global_parameters = bytes_to_arrays(payload)
+                workload.set_parameters(global_parameters)
+                global_model_norm = parameter_l2_norm(global_parameters)
 
                 self.logger.write(
                     "federated_phase",
@@ -410,24 +520,41 @@ class ExperimentClient:
                     ) / 1_000_000.0,
                 )
 
+                probe_inputs = probe_targets = None
+                probe_before: Dict[str, Any] = {}
+                probe_after: Dict[str, Any] = {}
+                if round_probe_enabled:
+                    try:
+                        probe_inputs, probe_targets = self.generator.training_batch()
+                        probe_before = aggregate_batch_metrics([
+                            dict(workload.evaluate_batch(probe_inputs, probe_targets))
+                        ])
+                    except Exception as exc:
+                        self.logger.write(
+                            "performance_probe_error",
+                            round=round_index,
+                            client_id=client_id,
+                            stage="before_local_training",
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                        probe_inputs = probe_targets = None
+
                 train_start = time.perf_counter_ns()
-                losses = []
-                accuracies = []
+                batch_metrics: list[Dict[str, Any]] = []
                 examples = 0
 
                 for local_epoch in range(local_epochs):
                     for batch_index in range(steps):
                         inputs, targets = self.generator.training_batch()
-                        metrics = workload.train_batch(
-                            inputs,
-                            targets,
+                        metrics = dict(
+                            workload.train_batch(
+                                inputs,
+                                targets,
+                            )
                         )
                         examples += int(inputs.shape[0])
-                        losses.append(float(metrics["loss"]))
-                        if "accuracy" in metrics:
-                            accuracies.append(
-                                float(metrics["accuracy"])
-                            )
+                        batch_metrics.append(metrics)
 
                         self.logger.write(
                             "federated_local_step",
@@ -438,12 +565,36 @@ class ExperimentClient:
                             samples_processed=int(inputs.shape[0]),
                             loss=float(metrics["loss"]),
                             accuracy=metrics.get("accuracy"),
+                            reconstruction_loss=metrics.get(
+                                "reconstruction_loss"
+                            ),
+                            mse=metrics.get("mse"),
+                            mae=metrics.get("mae"),
+                            kl_loss=metrics.get("kl_loss"),
+                            vae_beta=metrics.get("vae_beta"),
                             learning_rate=metrics.get(
                                 "learning_rate"
                             ),
                         )
 
                 train_end = time.perf_counter_ns()
+                round_train_metrics = aggregate_batch_metrics(batch_metrics)
+
+                if probe_inputs is not None and probe_targets is not None:
+                    try:
+                        probe_after = aggregate_batch_metrics([
+                            dict(workload.evaluate_batch(probe_inputs, probe_targets))
+                        ])
+                    except Exception as exc:
+                        self.logger.write(
+                            "performance_probe_error",
+                            round=round_index,
+                            client_id=client_id,
+                            stage="after_local_training",
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+
                 self.logger.write(
                     "federated_phase",
                     round=round_index,
@@ -452,20 +603,30 @@ class ExperimentClient:
                     local_epochs=local_epochs,
                     steps_per_epoch=steps,
                     samples_processed=examples,
-                    loss_mean=mean(losses) if losses else None,
-                    accuracy_mean=(
-                        mean(accuracies)
-                        if accuracies
-                        else None
+                    loss_mean=round_train_metrics.get("loss"),
+                    accuracy_mean=round_train_metrics.get("accuracy"),
+                    precision=round_train_metrics.get("precision"),
+                    recall=round_train_metrics.get("recall"),
+                    f1=round_train_metrics.get("f1"),
+                    reconstruction_loss=round_train_metrics.get(
+                        "reconstruction_loss"
                     ),
+                    mse=round_train_metrics.get("mse"),
+                    mae=round_train_metrics.get("mae"),
+                    kl_loss=round_train_metrics.get("kl_loss"),
+                    vae_beta=round_train_metrics.get("vae_beta"),
                     phase_time_ms=(
                         train_end - train_start
                     ) / 1_000_000.0,
                 )
 
-                update_payload = arrays_to_bytes(
-                    workload.get_parameters()
+                local_parameters = workload.get_parameters()
+                local_model_norm = parameter_l2_norm(local_parameters)
+                update_norm = parameter_delta_l2_norm(
+                    local_parameters,
+                    global_parameters,
                 )
+                update_payload = arrays_to_bytes(local_parameters)
                 update_mib = len(update_payload) / (1024.0 * 1024.0)
                 print(
                     f"[client] FL round {round_index}: "
@@ -473,33 +634,35 @@ class ExperimentClient:
                     f"to {self.config['node']['host']}:"
                     f"{self.config['node']['port']}"
                 )
+
+                wire_metrics = scalar_metrics_for_wire(round_train_metrics)
+                upload_header = {
+                    "op": "fl_update",
+                    "request_id": uuid.uuid4().hex,
+                    "experiment_id": str(
+                        self.config["experiment"]["experiment_id"]
+                    ),
+                    "client_id": client_id,
+                    "round": round_index,
+                    "num_examples": examples,
+                    "training_policy_id": str(policy.get("policy_id", "")),
+                    "model_contract": compact_model_contract,
+                    "client_model_norm_l2": local_model_norm,
+                    "client_update_norm_l2": update_norm,
+                }
+                upload_header.update(wire_metrics)
+
                 upload_start = time.perf_counter_ns()
                 send_frame(
                     sock,
-                    {
-                        "op": "fl_update",
-                        "request_id": uuid.uuid4().hex,
-                        "experiment_id": str(
-                            self.config["experiment"]["experiment_id"]
-                        ),
-                        "client_id": client_id,
-                        "round": round_index,
-                        "num_examples": examples,
-                        "loss": mean(losses) if losses else None,
-                        "accuracy": (
-                            mean(accuracies)
-                            if accuracies
-                            else None
-                        ),
-                    },
+                    upload_header,
                     update_payload,
                 )
                 upload_send_end = time.perf_counter_ns()
 
-                # Upload is now strictly the client-side send interval.
-                # Synchronous waiting for the round release is recorded as
-                # Idle so the network-side phase labels match observable
-                # communication behavior.
+                # Upload is strictly the client-side send interval. Server
+                # aggregation/evaluation and synchronous release waiting are
+                # recorded as Idle so the phase labels remain network-grounded.
                 upload_transfer_sec = max(
                     (
                         upload_send_end - upload_start
@@ -570,6 +733,105 @@ class ExperimentClient:
                     next_round=ack.get("next_round"),
                     done=ack.get("done", False),
                 )
+
+                if performance_writer is not None:
+                    before_loss = probe_before.get("loss")
+                    after_loss = probe_after.get("loss")
+                    before_accuracy = probe_before.get("accuracy")
+                    after_accuracy = probe_after.get("accuracy")
+                    before_f1 = probe_before.get("f1")
+                    after_f1 = probe_after.get("f1")
+                    # Single probe batches may not include enough classes to
+                    # make macro F1 informative; training F1 above is computed
+                    # over all local training examples in the round.
+                    row = {
+                        "experiment_id": self.config["experiment"]["experiment_id"],
+                        "client_id": client_id,
+                        "round": round_index,
+                        "family": self.config["ai"]["family"],
+                        "architecture": self.config["ai"]["architecture"],
+                        "variant": self.config["ai"]["variant"],
+                        "application": self.config["ai"]["application"],
+                        "dataset": self.config["ai"]["dataset"],
+                        "framework": self.config["ai"]["framework"],
+                        "runtime": self.config["ai"]["runtime"],
+                        "precision": self.config["execution"]["precision"],
+                        "input_size": self.config["ai"]["input_size"],
+                        "batch_size": self.config["execution"]["batch_size"],
+                        "global_rounds": server_rounds,
+                        "local_epochs": local_epochs,
+                        "steps_per_epoch": steps,
+                        "local_steps": local_epochs * steps,
+                        "train_samples": examples,
+                        "learning_rate": round_train_metrics.get(
+                            "learning_rate", self.config["execution"]["learning_rate"]
+                        ),
+                        "training_policy_id": policy.get("policy_id"),
+                        "policy_source": "server",
+                        "train_loss": round_train_metrics.get("loss"),
+                        "train_accuracy": round_train_metrics.get("accuracy"),
+                        "train_precision": round_train_metrics.get("precision"),
+                        "train_recall": round_train_metrics.get("recall"),
+                        "train_f1": round_train_metrics.get("f1"),
+                        "train_reconstruction_loss": round_train_metrics.get("reconstruction_loss"),
+                        "train_mse": round_train_metrics.get("mse"),
+                        "train_mae": round_train_metrics.get("mae"),
+                        "train_kl_loss": round_train_metrics.get("kl_loss"),
+                        "vae_beta": round_train_metrics.get("vae_beta"),
+                        "train_loss_before": before_loss,
+                        "train_loss_after": after_loss,
+                        "loss_change": metric_delta(
+                            after_loss, before_loss, improvement_direction="down"
+                        ),
+                        "accuracy_before": before_accuracy,
+                        "accuracy_after": after_accuracy,
+                        "accuracy_change": metric_delta(after_accuracy, before_accuracy),
+                        "f1_before": before_f1,
+                        "f1_after": after_f1,
+                        "f1_change": metric_delta(after_f1, before_f1),
+                        "mse_before": probe_before.get("mse"),
+                        "mse_after": probe_after.get("mse"),
+                        "mse_change": metric_delta(
+                            probe_after.get("mse"),
+                            probe_before.get("mse"),
+                            improvement_direction="down",
+                        ),
+                        "round_probe_samples": (
+                            int(probe_inputs.shape[0])
+                            if probe_inputs is not None
+                            else 0
+                        ),
+                        "metric_source": (
+                            "local_training_examples+held_out_round_probe"
+                            if probe_inputs is not None
+                            else "local_training_examples"
+                        ),
+                        "download_time_sec": (download_end - download_start) / 1_000_000_000.0,
+                        "training_time_sec": (train_end - train_start) / 1_000_000_000.0,
+                        "upload_time_sec": upload_transfer_sec,
+                        "sync_wait_time_sec": sync_wait_sec,
+                        "transaction_time_sec": transaction_sec,
+                        "model_size_bytes": len(update_payload),
+                        "global_model_norm_l2": global_model_norm,
+                        "local_model_norm_l2": local_model_norm,
+                        "update_norm_l2": update_norm,
+                        "timestamp_start_utc": round_timestamp_start,
+                        "timestamp_end_utc": utc_now_iso(),
+                    }
+                    performance_writer.write_client_round(row)
+                    self.logger.write(
+                        "federated_round_metrics",
+                        round=round_index,
+                        client_id=client_id,
+                        metrics_csv=str(performance_writer.output_dir / "round_metrics.csv"),
+                        train_loss=row.get("train_loss"),
+                        train_accuracy=row.get("train_accuracy"),
+                        train_precision=row.get("train_precision"),
+                        train_recall=row.get("train_recall"),
+                        train_f1=row.get("train_f1"),
+                        update_norm_l2=update_norm,
+                    )
+
                 print(
                     f"[client] FL round {round_index}: upload transfer "
                     f"{upload_transfer_sec:.2f} s "
