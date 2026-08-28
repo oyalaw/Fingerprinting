@@ -19,6 +19,7 @@ from .federated_contract import (
     write_model_contract,
 )
 from .federated_policy import build_training_policy
+from .experiment_coordination import ActiveRunCoordinator, ensure_run_id
 from .metadata import EventLogger
 from .protocol import (
     array_to_bytes,
@@ -52,6 +53,8 @@ class ExperimentServer:
         self.logger = EventLogger(self.config)
         self.workload = None
         self.stop_event = threading.Event()
+        ensure_run_id(self.config)
+        self._active_run_coordinator = None
 
         self._workload_lock = threading.Lock()
         self._federated_lock = threading.Lock()
@@ -350,6 +353,16 @@ class ExperimentServer:
     def serve_forever(self) -> None:
         listener = self._create_listener()
         address = listener.getsockname()
+        coordination_cfg = self.config.get("coordination", {}) or {}
+        if bool(coordination_cfg.get("enabled", True)):
+            self._active_run_coordinator = ActiveRunCoordinator(self.config)
+            self._active_run_coordinator.start()
+            print(
+                "[server] experiment coordinator: "
+                f"{self._active_run_coordinator.host}:"
+                f"{self._active_run_coordinator.port} "
+                f"run_id={self._active_run_coordinator.run_id}"
+            )
         monitor = ResourceMonitor(self.config)
         monitor.start()
 
@@ -399,6 +412,8 @@ class ExperimentServer:
                 thread.start()
         finally:
             listener.close()
+            if self._active_run_coordinator is not None:
+                self._active_run_coordinator.stop()
             summary = monitor.stop()
             self.logger.write(
                 "resource_summary",
@@ -702,11 +717,13 @@ class ExperimentServer:
                 "status": "ok",
                 "request_id": request_id,
                 "training_policy": policy,
+                "run_id": self.config.get("experiment", {}).get("run_id"),
             },
         )
         self.logger.write(
             "federated_training_policy_sent",
             client_id=header.get("client_id"),
+            run_id=self.config.get("experiment", {}).get("run_id"),
             policy_id=policy.get("policy_id"),
             input_size=policy.get("input_size"),
             batch_size=policy.get("batch_size"),

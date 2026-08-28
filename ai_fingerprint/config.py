@@ -21,11 +21,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "output_dir": "experiments/results",
         "results_root": "experiments/results",
         "existing_output_policy": "error",
+        "run_id": None,
     },
     "node": {
         "role": "server",
         "host": "10.42.0.195",
         "port": 8080,
+    },
+    "coordination": {
+        # Out-of-band experiment coordination. Only a neutral run ID is
+        # exposed to the label-blind proxy; no AI ground-truth labels.
+        "enabled": True,
+        "host": "10.42.0.195",
+        "port": 8081,
     },
     "transport": {
         # Kept as tcp for backward-compatible scripted configs. The

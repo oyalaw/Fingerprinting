@@ -7,6 +7,8 @@ from typing import Any, Dict, Iterable, Tuple
 
 import yaml
 
+from .experiment_coordination import ensure_run_id
+
 
 EXP_RE = re.compile(r"^exp(?P<number>[1-9][0-9]*)$", re.IGNORECASE)
 
@@ -123,6 +125,10 @@ def apply_hierarchical_layout(
     run_root = branch / exp_id
     role_dir = run_root / safe_component(role_token, "role")
     experiment = config.setdefault("experiment", {})
+    # The server owns the neutral per-execution run ID. It is deliberately
+    # separate from the human hierarchy/expN label and contains no AI labels.
+    if safe_component(role_token, "role") == "server":
+        ensure_run_id(config)
     experiment.update(
         {
             "experiment_id": exp_id,
@@ -165,6 +171,34 @@ def apply_proxy_locator_layout(
     return config
 
 
+
+def apply_proxy_staging_layout(
+    config: Dict[str, Any],
+    *,
+    staging_root: str | Path,
+    run_id: str,
+) -> Dict[str, Any]:
+    """Place label-blind proxy output under neutral staging/<run_id>/proxy."""
+    neutral = safe_component(run_id, "run_id")
+    run_root = Path(staging_root) / neutral
+    experiment = config.setdefault("experiment", {})
+    experiment.update(
+        {
+            # Proxy filenames use the neutral ID. The human expN/hierarchy is
+            # intentionally unavailable to the proxy during capture.
+            "experiment_id": neutral,
+            "run_id": neutral,
+            "experiment_number": None,
+            "results_root": str(Path(staging_root)),
+            "run_dir": str(run_root),
+            "storage_locator": None,
+            "output_dir": str(run_root / "proxy"),
+            "layout_version": "1.1-neutral-staging",
+            "storage_mode": "neutral_staging",
+        }
+    )
+    return config
+
 def materialize_role_metadata(config: Dict[str, Any]) -> None:
     experiment = config.get("experiment", {})
     output_dir = Path(experiment["output_dir"])
@@ -178,6 +212,7 @@ def materialize_role_metadata(config: Dict[str, Any]) -> None:
 
     role_manifest = {
         "experiment_id": experiment.get("experiment_id"),
+        "run_id": experiment.get("run_id"),
         "experiment_number": experiment.get("experiment_number"),
         "storage_locator": experiment.get("storage_locator"),
         "output_dir": str(output_dir),
@@ -203,6 +238,7 @@ def materialize_role_metadata(config: Dict[str, Any]) -> None:
             run_dir.mkdir(parents=True, exist_ok=True)
             common_manifest = {
                 "experiment_id": experiment.get("experiment_id"),
+                "run_id": experiment.get("run_id"),
                 "experiment_number": experiment.get("experiment_number"),
                 "storage_locator": experiment.get("storage_locator"),
                 "layout_version": experiment.get("layout_version", "1.0"),
@@ -235,6 +271,7 @@ def write_role_status(
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "experiment_id": config["experiment"].get("experiment_id"),
+        "run_id": config["experiment"].get("run_id"),
         "storage_locator": config["experiment"].get("storage_locator"),
         "role": config.get("node", {}).get("role", "proxy"),
         "status": str(status).upper(),

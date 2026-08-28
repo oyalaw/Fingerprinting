@@ -37,9 +37,15 @@ DEFAULT_PROXY_CONFIG: Dict[str, Any] = {
     "experiment": {
         "experiment_id": "auto",
         "output_dir": "experiments/results",
-        "results_root": "experiments/results",
+        "results_root": "experiments/staging",
         "storage_locator": None,
+        "run_id": None,
         "existing_output_policy": "error",
+    },
+    "coordination": {
+        "enabled": True,
+        "server_host": "10.42.0.195",
+        "server_port": 8081,
     },
     "proxy": {
         "listen_host": "10.42.0.1",
@@ -1256,6 +1262,8 @@ class BlindTCPProxy:
             "schema_version": "1.0",
             "experiment_id": self.experiment_id,
             "storage_locator": self.config.get("experiment", {}).get("storage_locator"),
+            "run_id": self.config.get("experiment", {}).get("run_id"),
+            "storage_mode": self.config.get("experiment", {}).get("storage_mode"),
             "role": "proxy",
             "label_blind": True,
             "tls_termination": False,

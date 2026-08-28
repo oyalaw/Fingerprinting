@@ -23,6 +23,7 @@ from .dataset_catalog import (
     get_dataset_spec,
 )
 from .dataset_manager import DatasetError, prepare_dataset
+from .experiment_coordination import wait_for_active_run
 from .experiment_output import (
     ExistingExperimentError,
     archive_existing_outputs,
@@ -34,6 +35,7 @@ from .experiment_layout import (
     write_role_status,
     apply_hierarchical_layout,
     apply_proxy_locator_layout,
+    apply_proxy_staging_layout,
     branch_directory,
     locator_for,
     next_experiment_number,
@@ -172,6 +174,8 @@ def _configure_experiment_storage(
         role_token=role_token,
     )
     print(f"Coordinated experiment ID: {config['experiment']['experiment_id']}")
+    if role == "server" and config.get("experiment", {}).get("run_id"):
+        print(f"Neutral run ID: {config['experiment']['run_id']}")
     print(f"Experiment storage locator: {locator_for(config)}")
     print(f"Role output directory: {config['experiment']['output_dir']}")
 
@@ -430,6 +434,8 @@ def interactive_configure(
                 "FL server port",
                 8080,
             )
+            config.setdefault("coordination", {})["host"] = config["node"]["host"]
+            config["coordination"].setdefault("port", 8081)
         else:
             config["node"]["host"] = ask_text(
                 "Remote endpoint IP or hostname (proxy)",
@@ -645,31 +651,10 @@ def interactive_configure(
 def interactive_proxy_configure() -> Dict[str, Any]:
     config = copy.deepcopy(DEFAULT_PROXY_CONFIG)
 
-    results_root = ask_text(
-        "Experiment results root",
-        "experiments/results",
-    )
-    while True:
-        locator = ask_text(
-            "Coordinated experiment storage locator; paste the value "
-            "printed by the server",
-            "",
-        ).strip()
-        if locator:
-            break
-        print(
-            "The storage locator is required so proxy output is placed "
-            "under the same family/architecture/variant/application/"
-            "dataset/framework/expN hierarchy."
-        )
-    apply_proxy_locator_layout(
-        config,
-        root=results_root,
-        locator=locator,
-    )
-    print(f"Coordinated experiment ID: {config['experiment']['experiment_id']}")
-    print(f"Proxy output directory: {config['experiment']['output_dir']}")
-
+    # Configure the network endpoints first. The proxy then discovers the
+    # current neutral run ID from the server over an out-of-band management
+    # channel. No family/architecture/variant/application/dataset/framework
+    # locator is supplied to the proxy.
     config["proxy"]["listen_host"] = ask_text(
         "Proxy listen IP",
         "10.42.0.1",
@@ -686,6 +671,33 @@ def interactive_proxy_configure() -> Dict[str, Any]:
         "FL server upstream port",
         8080,
     )
+    coordination = config.setdefault("coordination", {})
+    coordination["server_host"] = config["proxy"]["upstream_host"]
+    coordination.setdefault("server_port", 8081)
+    print(
+        "Experiment storage discovery: automatic (neutral run ID only)."
+    )
+    active_run = wait_for_active_run(
+        str(coordination["server_host"]),
+        int(coordination["server_port"]),
+    )
+    staging_root = str(
+        config.get("experiment", {}).get(
+            "results_root", "experiments/staging"
+        )
+    )
+    apply_proxy_staging_layout(
+        config,
+        staging_root=staging_root,
+        run_id=active_run.run_id,
+    )
+    print(f"Active neutral run ID: {active_run.run_id}")
+    print(f"Proxy staging directory: {config['experiment']['output_dir']}")
+    print(
+        "No AI family, architecture, variant, application, dataset, or "
+        "framework label was supplied to the proxy."
+    )
+
     print(
         "Network path: Clients -> "
         f"{config['proxy']['listen_host']}:{config['proxy']['listen_port']} "

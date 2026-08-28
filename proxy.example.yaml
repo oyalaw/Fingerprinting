@@ -1,11 +1,18 @@
 experiment:
-  experiment_id: exp1
-  results_root: experiments/results
-  # Operator-only storage metadata. It organizes files but never enters X.
-  storage_locator: cnn/resnet/resnet18/image_classification/cifar10/pytorch/exp1
-  output_dir: experiments/results/cnn/resnet/resnet18/image_classification/cifar10/pytorch/exp1/proxy
+  # Interactive proxy runs discover a neutral run ID from the server.
+  # No family/architecture/variant/application/dataset/framework locator
+  # is supplied to the proxy.
+  experiment_id: auto
+  run_id: null
+  results_root: experiments/staging
+  storage_locator: null
+  output_dir: experiments/staging
   existing_output_policy: error
 
+coordination:
+  enabled: true
+  server_host: 10.42.0.195
+  server_port: 8081
 proxy:
   listen_host: 10.42.0.1
   listen_port: 8080

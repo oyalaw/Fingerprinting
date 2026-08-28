@@ -1327,3 +1327,8 @@ host 10.42.0.1 and port 8080 and not host 10.42.0.195
 ```
 
 Clients are discovered from actual accepted proxy connections and assigned neutral aliases such as `trace_001` and `trace_002`. The same mapping is used by live multiscale inference and final per-client extraction. IPs/aliases remain isolation metadata and are excluded from classifier-ready features. Manual client-IP allow-lists remain available in configuration with `capture.client_discovery_mode: manual`. See `V0_9_2_AUTOMATIC_PROXY_CLIENT_DISCOVERY.md`.
+
+
+## v0.9.3 neutral proxy run coordination
+
+The proxy no longer asks for the hierarchical storage locator. For interactive experiments, the server creates a neutral run ID and exposes only that ID on an out-of-band coordination endpoint (default `10.42.0.195:8081`). The label-blind proxy discovers the active run automatically and writes to `experiments/staging/<run_id>/proxy/`. The server/client hierarchy remains `family/architecture/variant/application/dataset/framework/expN/`; `run_id` is recorded in role manifests so staged proxy artifacts can later be correlated without exposing AI labels to the proxy during capture.

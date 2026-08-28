@@ -418,6 +418,9 @@ class ExperimentClient:
                 raise RuntimeError(
                     "Server response is missing federated training_policy"
                 )
+            server_run_id = str(policy_header.get("run_id") or "").strip()
+            if server_run_id:
+                self.config.setdefault("experiment", {})["run_id"] = server_run_id
             apply_training_policy(self.config, policy)
             policy_path = write_received_policy(self.config, policy)
             effective_config_path = write_effective_config(self.config)
@@ -458,6 +461,7 @@ class ExperimentClient:
             self.logger.write(
                 "federated_training_policy_received",
                 client_id=client_id,
+                run_id=self.config.get("experiment", {}).get("run_id"),
                 policy_source="server",
                 policy_id=policy.get("policy_id"),
                 input_size=self.config["ai"]["input_size"],

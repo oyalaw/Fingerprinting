@@ -5,6 +5,11 @@ node:
   role: server
   host: 0.0.0.0
   port: 5000
+coordination:
+  enabled: true
+  host: 10.42.0.195
+  port: 8081
+
 transport:
   kind: tls
   certfile: null

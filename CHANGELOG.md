@@ -1,3 +1,14 @@
+# 0.9.3
+
+- Removed the interactive proxy storage-locator prompt. The proxy no longer receives `family/architecture/variant/application/dataset/framework/expN` during capture.
+- Added a server-side out-of-band experiment coordinator on `10.42.0.195:8081` by default. It exposes only a neutral per-execution `run_id`; it does not expose AI labels.
+- Added automatic proxy run discovery. The proxy contacts the coordinator, obtains the neutral `run_id`, and writes to `experiments/staging/<run_id>/proxy/`.
+- Added neutral `run_id` metadata to server manifests/status files and to the federated policy response so clients can record the same execution identity after connecting.
+- Kept the server/client scientific hierarchy unchanged at `family/architecture/variant/application/dataset/framework/expN/`. The neutral run ID is a cross-node correlation key, not a classifier feature.
+- Added regression coverage for neutral-ID generation, coordinator discovery, label-free proxy staging, and coordination defaults.
+
+Validation: 114 automated tests pass; Python compilation and package integrity checks pass.
+
 # 0.9.2
 
 - Removed the normal interactive prompt for comma-separated participating client IPs on the proxy.
