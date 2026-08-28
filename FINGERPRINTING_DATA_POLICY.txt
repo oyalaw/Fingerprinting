@@ -237,3 +237,14 @@ Per-round learning-performance artifacts are ground truth/system characterizatio
 - aggregation/evaluation time and convergence deltas
 
 They may be used to analyze convergence, learning utility, round stability, and correlations after fingerprinting predictions have been produced, but they are not proxy-observable traffic features.
+
+v0.9.4 partition/context rule
+-----------------------------
+IID/non-IID partition type, Dirichlet alpha, partition seed, client partition
+index/count, assignment ID, shard class histogram, and shard sample count are
+experimental ground truth/context only. They MUST NOT be predictors in X.
+
+Connection-level IP/source-port metadata is used only to match a proxy trace to
+the client's confirmed network registration. IP addresses, ports, connection
+IDs, and neutral trace aliases are grouping/audit metadata and MUST NOT enter
+the fingerprint predictor matrix.

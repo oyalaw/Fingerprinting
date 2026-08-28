@@ -1,6 +1,26 @@
 # AI Fingerprinting Experiment Codebase
 
-Version 0.8.9 preserves attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
+## v0.9.5: full-scale anomaly-detection performance logging
+
+Federated server runs now default to **100 global rounds** and the interactive server
+will not accept a smaller value. The server remains the sole authority for the round
+count.
+
+For `application=anomaly_detection`, class labels are now used to define held-out
+anomaly classes rather than being discarded after dataset partitioning. Anomaly-labelled
+examples are excluded from reconstruction training. Each round calibrates a
+reconstruction-error threshold on held-out normal samples and evaluates a separate
+normal+anomaly set. Client and server logs therefore populate loss, accuracy, precision,
+recall and F1, and also record AUROC/AUPRC and confusion counts.
+
+Anomaly experiments additionally produce concise files such as
+`anomaly_detection_metrics_iid.csv` or
+`anomaly_detection_metrics_non_iid_alpha_0p5.csv`. These evaluation labels and metrics
+remain ground-truth/system-characterization only and are explicitly forbidden from
+proxy-side fingerprinting predictors.
+
+
+Version 0.9.4 preserves attacker-data isolation and client-facing capture integrity: fingerprinting predictors come only from proxy-observable network data, client/server logs provide labels only, resource telemetry is prohibited from predictor input, and packet-sequence identity fields are removed from the classifier-safe sequence.
 
 The same repository supports client execution, server execution, proxy capture, real dataset loading, and ground truth logging.
 
@@ -1332,3 +1352,12 @@ Clients are discovered from actual accepted proxy connections and assigned neutr
 ## v0.9.3 neutral proxy run coordination
 
 The proxy no longer asks for the hierarchical storage locator. For interactive experiments, the server creates a neutral run ID and exposes only that ID on an out-of-band coordination endpoint (default `10.42.0.195:8081`). The label-blind proxy discovers the active run automatically and writes to `experiments/staging/<run_id>/proxy/`. The server/client hierarchy remains `family/architecture/variant/application/dataset/framework/expN/`; `run_id` is recorded in role manifests so staged proxy artifacts can later be correlated without exposing AI labels to the proxy during capture.
+
+
+## v0.9.4 IID/non-IID and experiment-integrity controls
+
+Federated training now treats the server as the authority for the data-distribution regime. Choose `iid` for equal disjoint random shards or `non_iid` for Dirichlet label skew. The policy is transmitted to each client together with a deterministic partition slot and seed. Clients write `data_partition.json` and partition-aware round-metric files.
+
+Round 0 now starts only after all expected clients are READY. Proxy artifacts are grouped by accepted TCP connection (client IP + source port) rather than IP alone, so stale/retry sessions are not merged with a valid client session. Offline dataset preparation confirms each trace using the client's exact network-registration IP+port and excludes unmatched connections.
+
+See `V0_9_4_IID_NONIID_AND_EXPERIMENT_INTEGRITY.md` and `DATA_PARTITION_SCHEMA.md`.

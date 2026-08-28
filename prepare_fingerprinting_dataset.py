@@ -26,10 +26,39 @@ def _feature_file_identity(path: Path):
         return None, False
 
 
+def _ground_truth_join_id(path: Path):
+    """Return neutral run_id when present, otherwise the human experiment_id."""
+    run_ids = set()
+    experiment_ids = set()
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                run_id = str(record.get("run_id") or "").strip()
+                experiment_id = str(record.get("experiment_id", "")).strip()
+                if run_id:
+                    run_ids.add(run_id)
+                if experiment_id:
+                    experiment_ids.add(experiment_id)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if len(run_ids) == 1:
+        return next(iter(run_ids))
+    if len(run_ids) > 1:
+        raise FingerprintingDataError(
+            f"Ground-truth file {path} contains multiple run_id values: {sorted(run_ids)}"
+        )
+    if len(experiment_ids) == 1:
+        return next(iter(experiment_ids))
+    return None
+
+
 def _read_network_registrations(ground_truth_paths):
     """
-    Return {(experiment_id, local_ip): client_id} from client-side
-    network_registration events.
+    Return {(experiment_id, local_ip, local_port): client_id} from client-side
+    network_registration events. IP+port avoids merging stale/retry TCP sessions.
 
     These records are ground-truth/grouping metadata only. They never enter X.
     """
@@ -41,10 +70,13 @@ def _read_network_registrations(ground_truth_paths):
                     if not line.strip():
                         continue
                     record = json.loads(line)
-                    if record.get("event") != "network_registration":
+                    if record.get("event") not in {
+                        "network_registration",
+                        "network_registration_confirmed",
+                    }:
                         continue
                     experiment_id = str(
-                        record.get("experiment_id", "")
+                        record.get("run_id") or record.get("experiment_id", "")
                     ).strip()
                     local_ip = str(
                         record.get("local_ip", "")
@@ -52,14 +84,18 @@ def _read_network_registrations(ground_truth_paths):
                     client_id = str(
                         record.get("client_id", "")
                     ).strip()
-                    if not (experiment_id and local_ip and client_id):
+                    try:
+                        local_port = int(record.get("local_port", 0) or 0)
+                    except (TypeError, ValueError):
+                        local_port = 0
+                    if not (experiment_id and local_ip and local_port and client_id):
                         continue
-                    key = (experiment_id, local_ip)
+                    key = (experiment_id, local_ip, local_port)
                     previous = mapping.get(key)
                     if previous and previous != client_id:
                         raise FingerprintingDataError(
                             "Conflicting network registration for "
-                            f"{experiment_id}/{local_ip}: "
+                            f"{experiment_id}/{local_ip}:{local_port}: "
                             f"{previous!r} vs {client_id!r}"
                         )
                     mapping[key] = client_id
@@ -71,70 +107,45 @@ def _read_network_registrations(ground_truth_paths):
 
 
 def _discover_manifest_client_map(root: Path, registrations):
-    """
-    Resolve proxy client_capture_id to the actual FL client_id.
-
-    Proxy manifest:
-        client IP -> capture alias/trace ID
-
-    Client ground truth:
-        local IP -> actual federated client_id
-
-    The join is out-of-band and is excluded from predictors.
-    """
+    """Resolve connection-granular proxy traces to actual FL client IDs."""
     resolved = {}
     diagnostics = []
-
     for manifest_path in sorted(root.rglob("*_manifest.json")):
         try:
-            manifest = json.loads(
-                manifest_path.read_text(encoding="utf-8")
-            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-
-        experiment_id = str(
-            manifest.get("experiment_id", "")
-        ).strip()
-        aliases = (
-            manifest.get("capture_isolation", {})
-            .get("client_aliases", {})
-            or {}
-        )
-        if not experiment_id or not isinstance(aliases, dict):
-            continue
-
-        for client_ip, capture_id in aliases.items():
-            client_ip = str(client_ip).strip()
-            capture_id = str(capture_id).strip()
-            actual_client_id = registrations.get(
-                (experiment_id, client_ip)
-            )
-            if not (
-                client_ip
-                and capture_id
-                and actual_client_id
-            ):
-                continue
-
-            key = (experiment_id, capture_id)
-            previous = resolved.get(key)
-            if previous and previous != actual_client_id:
-                raise FingerprintingDataError(
-                    "Conflicting proxy/client mapping for "
-                    f"{experiment_id}/{capture_id}: "
-                    f"{previous!r} vs {actual_client_id!r}"
-                )
-            resolved[key] = actual_client_id
-            diagnostics.append(
-                (
-                    experiment_id,
-                    client_ip,
-                    capture_id,
-                    actual_client_id,
-                )
-            )
-
+        experiment_id = str(manifest.get("experiment_id", "")).strip()
+        per_client = manifest.get("outputs", {}).get("per_client", {}) or {}
+        if experiment_id and isinstance(per_client, dict):
+            for capture_id, item in per_client.items():
+                if not isinstance(item, dict):
+                    continue
+                ip = str(item.get("client_ip", "")).strip()
+                try:
+                    port = int(item.get("client_port", 0) or 0)
+                except (TypeError, ValueError):
+                    port = 0
+                actual = registrations.get((experiment_id, ip, port))
+                if not actual:
+                    continue
+                key=(experiment_id, str(capture_id))
+                previous=resolved.get(key)
+                if previous and previous != actual:
+                    raise FingerprintingDataError(
+                        f"Conflicting proxy/client mapping for {experiment_id}/{capture_id}: {previous!r} vs {actual!r}"
+                    )
+                resolved[key]=actual
+                diagnostics.append((experiment_id, f"{ip}:{port}", str(capture_id), actual))
+        # Backward compatibility for old IP-only manifests.
+        aliases = manifest.get("capture_isolation", {}).get("client_aliases", {}) or {}
+        if experiment_id and isinstance(aliases, dict):
+            for ip, capture_id in aliases.items():
+                matches=[cid for (exp, rip, _port), cid in registrations.items() if exp==experiment_id and rip==str(ip)]
+                if len(set(matches)) != 1:
+                    continue
+                actual=matches[0]
+                resolved.setdefault((experiment_id, str(capture_id)), actual)
     return resolved, diagnostics
 
 
@@ -170,10 +181,7 @@ def discover_inputs(root: Path):
     matched_ground_truth = [
         path
         for path in ground_truth
-        if any(
-            path.name.startswith(experiment_id + "_")
-            for experiment_id in experiment_ids
-        )
+        if _ground_truth_join_id(path) in experiment_ids
     ]
 
     registrations = _read_network_registrations(
@@ -183,6 +191,35 @@ def discover_inputs(root: Path):
         root,
         registrations,
     )
+
+    # In connection-granular captures, a stale/retry TCP connection from the
+    # same IP may have its own trace. If at least one trace for a run maps to a
+    # confirmed client registration, only confirmed traces enter classifier X.
+    mapped_experiments = {experiment_id for experiment_id, _ in client_map}
+    filtered_features = []
+    excluded_unmatched = []
+    for feature_path in proxy_features:
+        experiment_id, has_client = _feature_file_identity(feature_path)
+        if not experiment_id or not has_client or experiment_id not in mapped_experiments:
+            filtered_features.append(feature_path)
+            continue
+        capture_id = ""
+        try:
+            with feature_path.open(newline="", encoding="utf-8") as handle:
+                first = next(csv.DictReader(handle), None)
+                capture_id = str((first or {}).get("client_capture_id", "")).strip()
+        except Exception:
+            pass
+        if capture_id and (experiment_id, capture_id) in client_map:
+            filtered_features.append(feature_path)
+        else:
+            excluded_unmatched.append(feature_path)
+
+    if excluded_unmatched:
+        print("\nUnmatched proxy connections excluded from classifier input:")
+        for path in excluded_unmatched:
+            print(f"  {path}")
+    proxy_features = filtered_features
 
     return (
         proxy_features,

@@ -95,6 +95,32 @@ def ask_int(prompt: str, default: int) -> int:
             print("Enter an integer.")
 
 
+def ask_int_min(prompt: str, default: int, minimum: int) -> int:
+    while True:
+        value = ask_int(prompt, default)
+        if value >= minimum:
+            return value
+        print(f"Enter an integer greater than or equal to {minimum}.")
+
+
+def ask_int_range(prompt: str, default: int, minimum: int, maximum: int) -> int:
+    while True:
+        value = ask_int(prompt, default)
+        if minimum <= value <= maximum:
+            return value
+        print(f"Enter an integer between {minimum} and {maximum}.")
+
+
+def _parse_int_list(value: str) -> list[int]:
+    tokens = [token.strip() for token in str(value).split(",") if token.strip()]
+    if not tokens:
+        raise ValueError("Enter at least one integer label.")
+    try:
+        return sorted({int(token) for token in tokens})
+    except ValueError as exc:
+        raise ValueError("Enter comma-separated integer labels, for example 9 or 8,9.") from exc
+
+
 def ask_yes_no(prompt: str, default: bool = True) -> bool:
     default_text = "Y/n" if default else "y/N"
     while True:
@@ -409,6 +435,40 @@ def interactive_configure(
         artifact = ask_text("Path to local model artifact")
         config["ai"]["model_artifact"] = artifact or None
 
+    if application == "anomaly_detection":
+        federated_client_anomaly = (
+            task == "training" and deployment == "federated" and role == "client"
+        )
+        if federated_client_anomaly:
+            print(
+                "Anomaly-detection evaluation policy will be received from the "
+                "server: anomaly labels, threshold percentile, calibration/evaluation "
+                "batches, and evaluation batch size."
+            )
+        else:
+            default_anomaly = max(int(config["ai"].get("num_classes", 10)) - 1, 0)
+            while True:
+                raw_labels = ask_text(
+                    "Anomaly class labels (comma-separated)",
+                    str(default_anomaly),
+                )
+                try:
+                    labels = _parse_int_list(raw_labels)
+                    num_classes = int(config["ai"].get("num_classes", 10))
+                    if any(value < 0 or value >= num_classes for value in labels):
+                        print(f"Labels must be between 0 and {num_classes - 1}.")
+                        continue
+                    if len(labels) >= num_classes:
+                        print("At least one class must remain normal for training.")
+                        continue
+                    break
+                except ValueError as exc:
+                    print(str(exc))
+            config["anomaly_detection"]["anomaly_labels"] = labels
+            config["anomaly_detection"]["threshold_percentile"] = float(
+                ask_text("Normal-score threshold percentile", "95")
+            )
+
     config["device"]["label"] = choose("Select device label", registry.DEVICES)
     if config["device"]["label"] == "custom":
         config["device"]["label"] = ask_text("Custom device label", "custom")
@@ -575,10 +635,19 @@ def interactive_configure(
             config["execution"]["learning_rate"] = float(
                 ask_text("Learning rate", "0.001")
             )
-            config["federated"]["rounds"] = ask_int(
-                "Federated rounds",
-                10,
+            run_mode = choose(
+                "Select federated experiment mode",
+                ["full_scale", "smoke_test"],
             )
+            config["federated"]["mode"] = run_mode
+            if run_mode == "full_scale":
+                config["federated"]["rounds"] = ask_int_min(
+                    "Federated rounds", 100, 100
+                )
+            else:
+                config["federated"]["rounds"] = ask_int_range(
+                    "Federated smoke-test rounds", 10, 1, 99
+                )
             config["federated"]["local_epochs"] = ask_int(
                 "Local epochs per round",
                 1,
@@ -591,6 +660,25 @@ def interactive_configure(
                 "Expected clients",
                 2,
             )
+            partition_choice = choose(
+                "Select federated data distribution",
+                ["iid", "non_iid"],
+            )
+            partition = config.setdefault("data", {}).setdefault("partition", {})
+            partition["type"] = partition_choice
+            partition["client_count"] = int(config["federated"]["expected_clients"])
+            partition["disjoint"] = True
+            partition["source"] = "server"
+            if partition_choice == "non_iid":
+                partition["alpha"] = float(
+                    ask_text("Dirichlet alpha for non-IID partition", "0.5")
+                )
+            else:
+                partition["alpha"] = 0.5
+            # Derive the partition seed automatically after expN is allocated.
+            # This keeps the same expN comparable across model branches while
+            # making repeated exp1/exp2/... partitions independently shuffled.
+            partition["seed"] = None
             config["federated"]["policy_source"] = "server"
         else:
             config["federated"]["client_id"] = ask_text(
@@ -612,16 +700,49 @@ def interactive_configure(
                     True,
                 )
             elif role == "server":
-                config["performance_logging"]["server_eval_batches"] = ask_int(
-                    "Global evaluation batches after each federated round",
-                    10,
-                )
+                if application == "anomaly_detection":
+                    config["anomaly_detection"]["calibration_batches"] = ask_int(
+                        "Normal calibration batches per round",
+                        10,
+                    )
+                    config["anomaly_detection"]["evaluation_batches"] = ask_int(
+                        "Anomaly evaluation batches per round",
+                        10,
+                    )
+                    config["anomaly_detection"]["evaluation_batch_size"] = ask_int(
+                        "Anomaly evaluation batch size",
+                        32,
+                    )
+                else:
+                    config["performance_logging"]["server_eval_batches"] = ask_int(
+                        "Global evaluation batches after each federated round",
+                        10,
+                    )
                 config["performance_logging"]["server_eval_split"] = ask_text(
                     "Global evaluation dataset split",
                     "test",
                 ).strip().lower()
 
     _configure_experiment_storage(config, role)
+
+    if (
+        task == "training"
+        and deployment == "federated"
+        and role == "server"
+    ):
+        partition = config.setdefault("data", {}).setdefault("partition", {})
+        if partition.get("seed") is None:
+            base_seed = int(config.get("execution", {}).get("seed", 42))
+            partition["seed"] = base_seed + int(
+                config["experiment"].get("experiment_number") or 1
+            ) - 1
+        partition["client_count"] = int(config["federated"]["expected_clients"])
+        print(
+            "Federated data partition: "
+            f"{partition.get('type')}"
+            + (f" alpha={partition.get('alpha')}" if partition.get('type') == 'non_iid' else "")
+            + f" seed={partition.get('seed')} disjoint=true"
+        )
 
     monitor_enabled = ask_yes_no(
         "Enable client/server resource telemetry",
@@ -784,6 +905,21 @@ def interactive_proxy_configure() -> Dict[str, Any]:
         config["capture"]["extract_after"] = ask_yes_no(
             "Extract packet sequence and handcrafted features on stop",
             True,
+        )
+
+        config["capture"]["rotation_enabled"] = ask_yes_no(
+            "Rotate PCAP files during long experiments", True
+        )
+        if config["capture"]["rotation_enabled"]:
+            config["capture"]["rotation_size_mb"] = ask_int_min(
+                "Maximum PCAP chunk size in MB", 2048, 64
+            )
+        config["capture"]["minimum_free_disk_gb"] = float(
+            ask_text("Minimum free disk space before capture in GiB", "20")
+        )
+        config["capture"]["disk_preflight_required"] = True
+        config["capture"]["packet_information_threshold"] = ask_int_min(
+            "Minimum packets for an information-sufficient feature window", 2, 1
         )
 
         use_default_scales = ask_yes_no(

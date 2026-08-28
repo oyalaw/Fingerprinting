@@ -33,6 +33,12 @@ OPTIONAL_CONTEXT_LABEL_FIELDS = [
     "precision",
     "batch_size",
     "input_size",
+    "data_partition_type",
+    "data_partition_alpha",
+    "data_partition_seed",
+    "data_partition_client_index",
+    "data_partition_client_count",
+    "data_partition_assignment_id",
 ]
 
 # Metadata may accompany X for grouping/splitting, but it is not part of the
@@ -49,6 +55,8 @@ PROXY_FEATURE_METADATA_FIELDS = [
     "trace_end_offset_sec",
     "window_start_global_sec",
     "window_end_global_sec",
+    "packet_information_threshold",
+    "packet_information_ok",
 ]
 
 # Raw packet identifiers are observable on the wire, but they are intentionally
@@ -110,6 +118,10 @@ FORBIDDEN_PREDICTOR_FIELDS = {
     "precision",
     "recall",
     "f1",
+    "f1_score",
+    "auroc",
+    "auprc",
+    "threshold",
     "mse",
     "mae",
     "kl_loss",
@@ -125,6 +137,38 @@ FORBIDDEN_PREDICTOR_FIELDS = {
     "round_duration_sec",
     "aggregation_time_ms",
     "evaluation_time_ms",
+    "data_partition_type",
+    "data_partition_alpha",
+    "data_partition_seed",
+    "data_partition_client_index",
+    "data_partition_client_count",
+    "data_partition_assignment_id",
+    "partition_type",
+    "partition_alpha",
+    "partition_seed",
+    "partition_index",
+    "partition_client_count",
+    "partition_assignment_id",
+    "anomaly_labels",
+    "anomaly_threshold",
+    "anomaly_threshold_percentile",
+    "anomaly_accuracy",
+    "anomaly_precision",
+    "anomaly_recall",
+    "anomaly_f1",
+    "anomaly_auroc",
+    "anomaly_auprc",
+    "anomaly_tp",
+    "anomaly_fp",
+    "anomaly_tn",
+    "anomaly_fn",
+    "anomaly_eval_samples",
+    "anomaly_samples",
+    "normal_samples",
+    "normal_error_mean",
+    "anomaly_error_mean",
+    "packet_information_threshold",
+    "packet_information_ok",
 }
 
 # Resource/system telemetry is client/server characterization only.
@@ -318,6 +362,7 @@ def _read_ground_truth_indices(
                 f"fingerprinting labels or predictors: {path}"
             )
 
+        records: list[tuple[int, Dict[str, Any]]] = []
         with path.open(encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, start=1):
                 if not line.strip():
@@ -328,13 +373,32 @@ def _read_ground_truth_indices(
                     raise FingerprintingDataError(
                         f"Invalid JSON in {path} line {line_number}"
                     ) from exc
+                records.append((line_number, record))
 
-                experiment_id = str(
+        # v0.9.3+ label-blind proxy files use the neutral run_id as their
+        # experiment_id. Client/server files retain human expN in filenames
+        # and experiment_id, so use the unique run_id from the file as the
+        # join key for *all* records, including pre-handshake records that
+        # were written before run_id was known.
+        run_ids = {
+            str(record.get("run_id", "")).strip()
+            for _, record in records
+            if record.get("run_id") not in {None, ""} and str(record.get("run_id")).strip()
+        }
+        if len(run_ids) > 1:
+            raise FingerprintingDataError(
+                f"Ground-truth file {path} contains multiple run_id values: "
+                f"{sorted(run_ids)}"
+            )
+        file_run_id = next(iter(run_ids), "")
+
+        for line_number, record in records:
+                experiment_id = file_run_id or str(
                     record.get("experiment_id", "")
                 ).strip()
                 if not experiment_id:
                     raise FingerprintingDataError(
-                        f"Missing experiment_id in {path} "
+                        f"Missing experiment_id/run_id in {path} "
                         f"line {line_number}"
                     )
 

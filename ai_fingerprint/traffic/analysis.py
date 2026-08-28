@@ -218,6 +218,41 @@ def _packet_matches_clients(
     return src_ip in allowed or dst_ip in allowed
 
 
+def _connection_key(ip: str, port: int) -> str:
+    return f"{str(ip).strip()}:{int(port)}"
+
+
+def connection_facing_packets(
+    packets: Sequence[PacketRecord],
+    *,
+    client_ip: str,
+    client_port: int,
+    proxy_ip: Optional[str] = None,
+    proxy_port: Optional[int] = None,
+) -> List[PacketRecord]:
+    """Return only packets from one accepted client TCP connection."""
+    ip = str(client_ip).strip()
+    port = int(client_port)
+    proxy = str(proxy_ip or "").strip()
+    pport = int(proxy_port) if proxy_port is not None else None
+    result: List[PacketRecord] = []
+    for packet in packets:
+        up = packet.src_ip == ip and packet.src_port == port
+        down = packet.dst_ip == ip and packet.dst_port == port
+        if not (up or down):
+            continue
+        if proxy:
+            peer_ip = packet.dst_ip if up else packet.src_ip
+            if peer_ip != proxy:
+                continue
+        if pport is not None:
+            peer_port = packet.dst_port if up else packet.src_port
+            if peer_port != pport:
+                continue
+        result.append(packet)
+    return result
+
+
 def _resolve_transport(ip_proto: str, ipv6_next_header: str) -> str:
     protocol_number = _to_int(_first_nonempty(ip_proto, ipv6_next_header), -1)
     if protocol_number == 6:
@@ -806,6 +841,7 @@ def _extract_single_feature_row(
     window_end_sec: float,
     burst_gap_sec: float,
     idle_threshold_sec: float,
+    packet_information_threshold: int = 2,
 ) -> Dict[str, Any]:
     packet_count = len(packets)
     frame_lengths = np.asarray(
@@ -911,6 +947,11 @@ def _extract_single_feature_row(
         "window_end_sec": window_end_sec,
         "window_size_sec": 0.0,
         "packet_count_total": packet_count,
+        # Sparse windows are retained rather than dropped. These audit fields
+        # describe whether a window contains enough packet information for
+        # downstream quality analysis and are excluded from predictor X.
+        "packet_information_threshold": int(packet_information_threshold),
+        "packet_information_ok": int(packet_count >= int(packet_information_threshold)),
         "packet_count_up": len(up_packets),
         "packet_count_down": len(down_packets),
         "packet_count_unknown": len(unknown_packets),
@@ -1015,6 +1056,7 @@ def extract_feature_rows(
     burst_gap_sec: float = 0.05,
     idle_threshold_sec: float = 0.5,
     window_seconds: Optional[float] = None,
+    packet_information_threshold: int = 2,
 ) -> List[Dict[str, Any]]:
     if burst_gap_sec < 0:
         raise ValueError("burst_gap_sec must be nonnegative")
@@ -1034,6 +1076,7 @@ def extract_feature_rows(
                 window_end_sec=0.0,
                 burst_gap_sec=burst_gap_sec,
                 idle_threshold_sec=idle_threshold_sec,
+                packet_information_threshold=packet_information_threshold,
             )
         ]
 
@@ -1053,6 +1096,7 @@ def extract_feature_rows(
             window_end_sec=total_duration,
             burst_gap_sec=burst_gap_sec,
             idle_threshold_sec=idle_threshold_sec,
+            packet_information_threshold=packet_information_threshold,
         )
     ]
 
@@ -1091,6 +1135,7 @@ def extract_feature_rows(
             window_end_sec=end,
             burst_gap_sec=burst_gap_sec,
             idle_threshold_sec=idle_threshold_sec,
+            packet_information_threshold=packet_information_threshold,
         )
         row["window_size_sec"] = float(window_seconds)
         rows.append(row)
@@ -1104,6 +1149,7 @@ def extract_multiscale_feature_rows(
     burst_gap_sec: float = 0.05,
     idle_threshold_sec: float = 0.5,
     window_sizes_sec: Sequence[float] = (0.5, 1.0, 2.0, 5.0),
+    packet_information_threshold: int = 2,
 ) -> List[Dict[str, Any]]:
     """Return one complete-trace row and online-compatible windows.
 
@@ -1126,6 +1172,7 @@ def extract_multiscale_feature_rows(
         burst_gap_sec=burst_gap_sec,
         idle_threshold_sec=idle_threshold_sec,
         window_seconds=None,
+        packet_information_threshold=packet_information_threshold,
     )[0]
     overall["window_size_sec"] = 0.0
     rows: List[Dict[str, Any]] = [overall]
@@ -1137,6 +1184,7 @@ def extract_multiscale_feature_rows(
             burst_gap_sec=burst_gap_sec,
             idle_threshold_sec=idle_threshold_sec,
             window_seconds=size,
+            packet_information_threshold=packet_information_threshold,
         )
         rows.extend(scale_rows[1:])
     return rows
@@ -1317,6 +1365,8 @@ def _feature_count(row: Dict[str, Any]) -> int:
         "trace_end_offset_sec",
         "window_start_global_sec",
         "window_end_global_sec",
+        "packet_information_threshold",
+        "packet_information_ok",
     }
     return len([key for key in row if key not in metadata])
 
@@ -1464,6 +1514,9 @@ def _export_packets_artifacts(
     client_ip: Optional[str] = None,
     client_ips: Optional[Sequence[str]] = None,
     client_aliases: Optional[Dict[str, str]] = None,
+    client_connections: Optional[Sequence[Dict[str, Any]]] = None,
+    proxy_ip: Optional[str] = None,
+    proxy_port: Optional[int] = None,
     per_client_artifacts: bool = True,
     capture_interface: Optional[str] = None,
     capture_preflight: Optional[Dict[str, Any]] = None,
@@ -1473,6 +1526,7 @@ def _export_packets_artifacts(
     window_sizes_sec: Optional[Sequence[float]] = None,
     filename_suffix: str = "",
     capture_isolation_metadata: Optional[Dict[str, Any]] = None,
+    packet_information_threshold: int = 2,
 ) -> Dict[str, Any]:
     target_dir.mkdir(parents=True, exist_ok=True)
     clients = _normalized_client_ips(
@@ -1499,6 +1553,7 @@ def _export_packets_artifacts(
             burst_gap_sec=burst_gap_sec,
             idle_threshold_sec=idle_threshold_sec,
             window_sizes_sec=window_sizes_sec,
+            packet_information_threshold=packet_information_threshold,
         )
         if window_sizes_sec
         else extract_feature_rows(
@@ -1507,6 +1562,7 @@ def _export_packets_artifacts(
             burst_gap_sec=burst_gap_sec,
             idle_threshold_sec=idle_threshold_sec,
             window_seconds=window_seconds,
+            packet_information_threshold=packet_information_threshold,
         )
     )
 
@@ -1526,15 +1582,30 @@ def _export_packets_artifacts(
     )
 
     per_client_outputs: Dict[str, Dict[str, Any]] = {}
-    if per_client_artifacts and clients:
-        for ip in clients:
-            client_packets = client_facing_packets(
+    normalized_connections = []
+    for item in list(client_connections or []):
+        try:
+            ip = str(item.get("client_ip", "")).strip()
+            port = int(item.get("client_port"))
+        except (TypeError, ValueError):
+            continue
+        if not ip or port <= 0:
+            continue
+        key = _connection_key(ip, port)
+        normalized_connections.append((ip, port, key, str(item.get("alias", "")).strip()))
+
+    if per_client_artifacts and normalized_connections:
+        for ip, client_port, connection_key, supplied_alias in normalized_connections:
+            client_packets = connection_facing_packets(
                 packets,
                 client_ip=ip,
+                client_port=client_port,
+                proxy_ip=proxy_ip,
+                proxy_port=proxy_port,
             )
             if not client_packets:
                 continue
-            alias = aliases[ip]
+            alias = supplied_alias or (client_aliases or {}).get(connection_key) or f"trace_{len(per_client_outputs)+1:03d}"
             client_stem = f"{stem}__{alias}"
             client_safe = (
                 target_dir
@@ -1619,6 +1690,8 @@ def _export_packets_artifacts(
             )
             per_client_outputs[alias] = {
                 "client_ip": ip,
+                "client_port": client_port,
+                "connection_key": connection_key,
                 "packet_count": len(client_packets),
                 "fingerprint_sequence_csv": str(client_safe),
                 "features_csv": str(client_features),
@@ -1630,6 +1703,54 @@ def _export_packets_artifacts(
                 ),
                 "classifier_eligible": True,
             }
+    elif per_client_artifacts and clients:
+        for ip in clients:
+            client_packets = client_facing_packets(packets, client_ip=ip)
+            if not client_packets:
+                continue
+            alias = aliases[ip]
+            client_stem = f"{stem}__{alias}"
+            client_safe = target_dir / f"{client_stem}_fingerprint_sequence.csv"
+            client_features = target_dir / f"{client_stem}_features.csv"
+            write_fingerprint_sequence_csv(packets=client_packets, experiment_id=experiment_id, output_path=client_safe)
+            rows = extract_multiscale_feature_rows(
+                packets=client_packets, experiment_id=experiment_id, burst_gap_sec=burst_gap_sec,
+                idle_threshold_sec=idle_threshold_sec, window_sizes_sec=window_sizes_sec,
+                packet_information_threshold=packet_information_threshold
+            ) if window_sizes_sec else extract_feature_rows(
+                packets=client_packets, experiment_id=experiment_id, burst_gap_sec=burst_gap_sec,
+                idle_threshold_sec=idle_threshold_sec, window_seconds=window_seconds,
+                packet_information_threshold=packet_information_threshold
+            )
+            combined_start_epoch = packets[0].timestamp_epoch if packets else 0.0
+            trace_start_offset_sec = max(0.0, client_packets[0].timestamp_epoch-combined_start_epoch)
+            trace_end_offset_sec = max(trace_start_offset_sec, client_packets[-1].timestamp_epoch-combined_start_epoch)
+            rows_with_client=[]
+            for row in rows:
+                enriched={
+                    "experiment_id": row["experiment_id"], "client_capture_id": alias,
+                    "trace_start_offset_sec": trace_start_offset_sec, "trace_end_offset_sec": trace_end_offset_sec,
+                    "window_start_global_sec": trace_start_offset_sec+float(row.get("window_start_sec",0.0)),
+                    "window_end_global_sec": trace_start_offset_sec+float(row.get("window_end_sec",0.0)),
+                }
+                enriched.update({k:v for k,v in row.items() if k != "experiment_id"})
+                rows_with_client.append(enriched)
+            write_feature_csv(rows=rows_with_client, output_path=client_features)
+            per_client_outputs[alias]={
+                "client_ip": ip, "packet_count": len(client_packets),
+                "fingerprint_sequence_csv": str(client_safe), "features_csv": str(client_features),
+                "feature_row_count": len(rows_with_client), "trace_start_offset_sec": trace_start_offset_sec,
+                "trace_end_offset_sec": trace_end_offset_sec, "global_time_reference":"combined_capture_start",
+                "classifier_eligible": True,
+            }
+
+    isolation_metadata = dict(capture_isolation_metadata or {})
+    if normalized_connections:
+        isolation_metadata["granularity"] = "accepted_tcp_connection"
+        isolation_metadata["accepted_connections"] = [
+            {"client_ip": ip, "client_port": port, "alias": (alias or (client_aliases or {}).get(key))}
+            for ip, port, key, alias in normalized_connections
+        ]
 
     write_manifest(
         experiment_id=experiment_id,
@@ -1651,7 +1772,7 @@ def _export_packets_artifacts(
         idle_threshold_sec=idle_threshold_sec,
         window_seconds=window_seconds,
         window_sizes_sec=window_sizes_sec,
-        capture_isolation_metadata=capture_isolation_metadata,
+        capture_isolation_metadata=isolation_metadata,
     )
 
     quality = capture_quality_diagnostics(
@@ -1693,6 +1814,9 @@ def extract_capture_artifacts(
     client_ip: Optional[str] = None,
     client_ips: Optional[Sequence[str]] = None,
     client_aliases: Optional[Dict[str, str]] = None,
+    client_connections: Optional[Sequence[Dict[str, Any]]] = None,
+    proxy_ip: Optional[str] = None,
+    proxy_port: Optional[int] = None,
     per_client_artifacts: bool = True,
     capture_interface: Optional[str] = None,
     capture_preflight: Optional[Dict[str, Any]] = None,
@@ -1701,6 +1825,7 @@ def extract_capture_artifacts(
     window_seconds: Optional[float] = 5.0,
     window_sizes_sec: Optional[Sequence[float]] = None,
     capture_isolation_metadata: Optional[Dict[str, Any]] = None,
+    packet_information_threshold: int = 2,
 ) -> Dict[str, Any]:
     pcap = Path(pcap_path)
     if not pcap.exists():
@@ -1751,6 +1876,9 @@ def extract_capture_artifacts(
         client_ip=client_ip,
         client_ips=clients,
         client_aliases=client_aliases,
+        client_connections=client_connections,
+        proxy_ip=proxy_ip,
+        proxy_port=proxy_port,
         per_client_artifacts=per_client_artifacts,
         capture_interface=capture_interface,
         capture_preflight=capture_preflight,
@@ -1759,6 +1887,7 @@ def extract_capture_artifacts(
         window_seconds=window_seconds,
         window_sizes_sec=window_sizes_sec,
         capture_isolation_metadata=capture_isolation_metadata,
+        packet_information_threshold=packet_information_threshold,
     )
     result["pcap"] = str(pcap)
     return result

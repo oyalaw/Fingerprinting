@@ -34,8 +34,10 @@ def output_role_token(config: Dict[str, Any]) -> str:
 def ground_truth_record(config: Dict[str, Any]) -> Dict[str, Any]:
     ai = config["ai"]
     data = config["data"]
+    partition = config.get("data", {}).get("partition", {}) or {}
     record = {
         "experiment_id": config["experiment"]["experiment_id"],
+        "run_id": config.get("experiment", {}).get("run_id"),
         "role": config["node"]["role"],
         "framework": ai["framework"],
         "runtime": ai["runtime"],
@@ -59,6 +61,14 @@ def ground_truth_record(config: Dict[str, Any]) -> Dict[str, Any]:
         "precision": config["execution"]["precision"],
         "batch_size": config["execution"]["batch_size"],
         "input_size": ai["input_size"],
+        # Data-partition metadata is ground truth / experimental context only.
+        # It is explicitly forbidden from proxy-side predictor matrices.
+        "data_partition_type": partition.get("type"),
+        "data_partition_alpha": partition.get("alpha"),
+        "data_partition_seed": partition.get("seed"),
+        "data_partition_client_index": partition.get("client_index"),
+        "data_partition_client_count": partition.get("client_count"),
+        "data_partition_assignment_id": partition.get("assignment_id"),
     }
 
     if (

@@ -70,7 +70,8 @@ resource_monitor:
   gpu_index: 0
   power_enabled: true
 federated:
-  rounds: 10
+  mode: full_scale
+  rounds: 100
   local_epochs: 1
   steps_per_epoch: 10
   expected_clients: 2

@@ -19,12 +19,15 @@ from .capture import (
     inspect_capture_interface,
     start_capture_process,
     stop_capture_process,
+    discover_capture_chunks,
+    capture_chunks_summary,
 )
 from .live_inference import (
     LiveArchitectureMonitor,
     run_final_architecture_inference,
 )
 from .experiment_output import enforce_experiment_output_policy
+from .experiment_integrity import atomic_write_json, disk_preflight, sha256_file, utc_now_iso
 from .offload import CaptureOffloadError, CaptureOffloadManager
 from .traffic import extract_capture_artifacts
 
@@ -98,6 +101,13 @@ DEFAULT_PROXY_CONFIG: Dict[str, Any] = {
         # defeating the multiscale real-time experiment. Set true only when
         # a deliberate single-scale study is intended.
         "allow_single_scale": False,
+        # Full-scale capture protection. Each file is one part of one logical
+        # PCAP capture and extraction processes chunks sequentially.
+        "rotation_enabled": True,
+        "rotation_size_mb": 2048,
+        "minimum_free_disk_gb": 20.0,
+        "disk_preflight_required": True,
+        "packet_information_threshold": 2,
     },
     "architecture_inference": {
         "enabled": True,
@@ -276,6 +286,14 @@ def validate_proxy_config(config: Dict[str, Any]) -> None:
             raise ProxyError(
                 "capture.window_seconds must be positive or null"
             )
+
+        if bool(capture.get("rotation_enabled", True)):
+            if int(capture.get("rotation_size_mb", 2048)) <= 0:
+                raise ProxyError("capture.rotation_size_mb must be positive")
+        if float(capture.get("minimum_free_disk_gb", 20.0)) < 0:
+            raise ProxyError("capture.minimum_free_disk_gb must be nonnegative")
+        if int(capture.get("packet_information_threshold", 2)) < 1:
+            raise ProxyError("capture.packet_information_threshold must be at least 1")
 
         window_sizes = capture.get("window_sizes_sec", []) or []
         if isinstance(window_sizes, (int, float, str)):
@@ -457,10 +475,9 @@ class BlindTCPProxy:
             self.output_dir
             / f"{self.experiment_id}_proxy_summary.json"
         )
-        self.pcap_path = (
-            self.output_dir
-            / f"{self.experiment_id}.pcapng"
-        )
+        self.pcap_dir = self.output_dir / "pcap"
+        self.pcap_dir.mkdir(parents=True, exist_ok=True)
+        self.pcap_path = self.pcap_dir / "capture.pcapng"
 
         self._start_monotonic = 0.0
         self._lock = threading.Lock()
@@ -486,6 +503,8 @@ class BlindTCPProxy:
 
         self._discovered_client_ips: list[str] = []
         self._discovered_client_aliases: Dict[str, str] = {}
+        self._discovered_connections: list[Dict[str, Any]] = []
+        self._connection_aliases: Dict[str, str] = {}
         for ip in self._configured_client_ips():
             self._register_discovered_client(
                 ip,
@@ -526,6 +545,41 @@ class BlindTCPProxy:
     def _capture_client_aliases(self) -> Dict[str, str]:
         with self._lock:
             return dict(self._discovered_client_aliases)
+
+    def _capture_client_connections(self) -> list[Dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self._discovered_connections]
+
+    def _register_discovered_connection(
+        self,
+        client_ip: str,
+        client_port: int,
+        *,
+        source: str,
+    ) -> str:
+        ip = str(client_ip).strip()
+        port = int(client_port)
+        if not ip or port <= 0:
+            raise ProxyError("Discovered client connection is invalid")
+        key = f"{ip}:{port}"
+        with self._lock:
+            if key in self._connection_aliases:
+                return self._connection_aliases[key]
+            alias = f"trace_{len(self._discovered_connections)+1:03d}"
+            self._connection_aliases[key] = alias
+            self._discovered_connections.append({
+                "client_ip": ip, "client_port": port, "connection_key": key,
+                "alias": alias, "source": source,
+            })
+        self._register_discovered_client(ip, source=source, notify_monitor=False)
+        print(f"[proxy] discovered client connection {key} -> {alias} [{source}]")
+        monitor = self._live_architecture_monitor
+        if monitor is not None:
+            try:
+                monitor.register_connection(ip, port, alias=alias)
+            except Exception as exc:
+                print(f"[proxy] WARNING: live monitor could not register connection {key}: {type(exc).__name__}: {exc}")
+        return alias
 
     def _register_discovered_client(
         self,
@@ -655,10 +709,24 @@ class BlindTCPProxy:
                     state_path=self._offload_state_path,
                 )
 
+                disk_check = disk_preflight(
+                    self.output_dir,
+                    float(capture.get("minimum_free_disk_gb", 20.0)),
+                )
+                if (
+                    bool(capture.get("disk_preflight_required", True))
+                    and not bool(disk_check.get("passed"))
+                ):
+                    raise ProxyError(
+                        "Insufficient free disk space for capture: "
+                        f"{disk_check.get('free_gb', 0.0):.2f} GiB available, "
+                        f"{disk_check.get('minimum_free_gb', 0.0):.2f} GiB required"
+                    )
                 offload_report = self._offload_manager.start()
                 self._capture_preflight = inspect_capture_interface(
                     interface
                 )
+                self._capture_preflight["disk_preflight"] = disk_check
                 self._capture_preflight[
                     "snaplen_bytes"
                 ] = capture.get("snaplen_bytes", 256)
@@ -729,6 +797,11 @@ class BlindTCPProxy:
                     snaplen_bytes=capture.get(
                         "snaplen_bytes", 256
                     ),
+                    rotation_size_mb=(
+                        int(capture.get("rotation_size_mb", 2048))
+                        if bool(capture.get("rotation_enabled", True))
+                        else None
+                    ),
                 )
                 self._start_live_architecture_monitor(
                     interface=interface,
@@ -773,8 +846,10 @@ class BlindTCPProxy:
                     else str(client_addr).strip()
                 )
                 if self._client_discovery_mode() == "automatic":
-                    self._register_discovered_client(
+                    client_port = int(client_addr[1]) if isinstance(client_addr, tuple) and len(client_addr) > 1 else 0
+                    self._register_discovered_connection(
                         client_ip,
+                        client_port,
                         source="accepted_connection",
                     )
                 with self._lock:
@@ -819,6 +894,29 @@ class BlindTCPProxy:
             self._restore_capture_offloads()
 
         summary = self._write_summary(capture_result)
+        capture_required = bool(self.config.get("capture", {}).get("enabled", True))
+        capture_ok = (
+            not capture_required
+            or (
+                bool(capture_result.get("capture_complete", False))
+                and not capture_result.get("capture_error")
+            )
+        )
+        terminal_status = "COMPLETED" if capture_ok else "CAPTURE_INCOMPLETE"
+        atomic_write_json(
+            self.output_dir / "experiment_status.json",
+            {
+                "experiment_id": self.experiment_id,
+                "run_id": self.config.get("experiment", {}).get("run_id"),
+                "role": "proxy",
+                "status": terminal_status,
+                "pcap_chunks": capture_result.get("pcap_chunks", 0),
+                "total_capture_bytes": capture_result.get("total_capture_bytes", 0),
+                "capture_error": capture_result.get("capture_error"),
+                "timestamp_utc": utc_now_iso(),
+            },
+        )
+        summary["experiment_status"] = terminal_status
         return summary
 
     def _start_live_architecture_monitor(
@@ -1128,125 +1226,156 @@ class BlindTCPProxy:
         capture = self.config["capture"]
 
         if self._capture_process is None:
-            return {
-                "capture_enabled": False,
-            }
+            return {"capture_enabled": False}
 
         stop_capture_process(self._capture_process)
         self._capture_process = None
-
-        # Capture has ended. Restore host networking before CPU-heavy
-        # post-processing/extraction so the modified NIC state exists only
-        # during the measured interval.
         self._restore_capture_offloads()
 
+        chunks = discover_capture_chunks(self.pcap_path)
+        chunk_summary = capture_chunks_summary(self.pcap_path)
         result: Dict[str, Any] = {
             "capture_enabled": True,
             "pcap": str(self.pcap_path),
+            "pcap_chunks": chunk_summary["pcap_chunks"],
+            "total_capture_bytes": chunk_summary["total_capture_bytes"],
+            "capture_complete": bool(chunks),
+            "pcap_chunk_files": [str(path) for path in chunks],
         }
+        atomic_write_json(
+            self.output_dir / "capture_chunks_manifest.json",
+            {
+                "experiment_id": self.experiment_id,
+                "run_id": self.config.get("experiment", {}).get("run_id"),
+                "capture_complete": bool(chunks),
+                "pcap_chunks": len(chunks),
+                "total_capture_bytes": chunk_summary["total_capture_bytes"],
+                "rotation_enabled": bool(capture.get("rotation_enabled", True)),
+                "rotation_size_mb": int(capture.get("rotation_size_mb", 2048)),
+                "chunks": [
+                    {
+                        "index": index,
+                        "path": str(path),
+                        "size_bytes": int(path.stat().st_size),
+                        "sha256": sha256_file(path),
+                    }
+                    for index, path in enumerate(chunks, start=1)
+                ],
+                "timestamp_utc": utc_now_iso(),
+            },
+        )
 
         if not bool(capture.get("extract_after", True)):
             return result
-
-        if (
-            not self.pcap_path.exists()
-            or self.pcap_path.stat().st_size == 0
-        ):
-            result["capture_error"] = (
-                "PCAP is missing or empty"
-            )
+        if not chunks:
+            result["capture_error"] = "PCAP capture is missing or empty"
+            result["capture_complete"] = False
             return result
 
-        server_ip = (
-            capture.get("proxy_client_facing_ip")
-            or None
-        )
+        server_ip = capture.get("proxy_client_facing_ip") or None
         client_ip = capture.get("client_ip") or None
+        extraction_root = self.output_dir / "capture_artifacts"
+        chunk_artifacts = []
+        total_packets = 0
+        total_feature_rows = 0
+        final_per_client: Dict[str, Any] = {}
 
+        # Process one rotated PCAP at a time. This prevents tshark output and
+        # PacketRecord objects for the full 100-round experiment from being
+        # retained in memory at once.
         try:
-            artifacts = extract_capture_artifacts(
-                pcap_path=self.pcap_path,
-                experiment_id=self.experiment_id,
-                output_dir=str(self.output_dir),
-                server_ip=server_ip,
-                client_ip=client_ip,
-                client_ips=self._capture_client_ips(),
-                client_aliases=self._capture_client_aliases(),
-                per_client_artifacts=bool(
-                    capture.get("per_client_artifacts", True)
-                ),
-                capture_interface=str(capture.get("interface") or ""),
-                capture_preflight=self._capture_preflight,
-                burst_gap_sec=float(
-                    capture.get("burst_gap_sec", 0.05)
-                ),
-                idle_threshold_sec=float(
-                    capture.get(
-                        "idle_threshold_sec",
-                        0.5,
-                    )
-                ),
-                window_seconds=capture.get(
-                    "window_seconds"
-                ),
-                window_sizes_sec=(
-                    capture.get("window_sizes_sec") or None
-                ),
-                capture_isolation_metadata={
-                    "mode": (
-                        "automatic_proxy_connection_discovery"
-                        if self._client_discovery_mode() == "automatic"
-                        else "manual_client_ip_bpf"
+            for index, chunk in enumerate(chunks, start=1):
+                chunk_dir = extraction_root / f"chunk_{index:04d}"
+                artifacts = extract_capture_artifacts(
+                    pcap_path=chunk,
+                    experiment_id=self.experiment_id,
+                    output_dir=str(chunk_dir),
+                    server_ip=server_ip,
+                    client_ip=client_ip,
+                    client_ips=self._capture_client_ips(),
+                    client_aliases=self._capture_client_aliases(),
+                    client_connections=self._capture_client_connections(),
+                    proxy_ip=str(self.config["proxy"].get("listen_host", "")),
+                    proxy_port=int(self.config["proxy"].get("listen_port", 8080)),
+                    per_client_artifacts=bool(capture.get("per_client_artifacts", True)),
+                    capture_interface=str(capture.get("interface") or ""),
+                    capture_preflight=self._capture_preflight,
+                    burst_gap_sec=float(capture.get("burst_gap_sec", 0.05)),
+                    idle_threshold_sec=float(capture.get("idle_threshold_sec", 0.5)),
+                    window_seconds=capture.get("window_seconds"),
+                    window_sizes_sec=(capture.get("window_sizes_sec") or None),
+                    capture_isolation_metadata={
+                        "mode": (
+                            "automatic_proxy_connection_discovery_connection_granular"
+                            if self._client_discovery_mode() == "automatic"
+                            else "manual_client_ip_bpf"
+                        ),
+                        "chunk_index": index,
+                        "chunk_count": len(chunks),
+                        "packet_information_threshold": int(
+                            capture.get("packet_information_threshold", 2)
+                        ),
+                        "upstream_server_excluded": str(
+                            self.config["proxy"]["upstream_host"]
+                        ),
+                    },
+                    packet_information_threshold=int(
+                        capture.get("packet_information_threshold", 2)
                     ),
-                    "discovery_method": (
-                        "accepted_proxy_connections"
-                        if self._client_discovery_mode() == "automatic"
-                        else "configured_client_ips"
-                    ),
-                    "upstream_server_excluded": str(
-                        self.config["proxy"]["upstream_host"]
-                    ),
-                    "capture_filter_scope": "client_facing_only",
+                )
+                chunk_artifacts.append(artifacts)
+                total_packets += int(artifacts.get("packet_count", 0))
+                total_feature_rows += int(artifacts.get("feature_row_count", 0))
+                final_per_client.update(artifacts.get("per_client_artifacts", {}) or {})
+
+            result.update({
+                "packet_count": total_packets,
+                "feature_row_count": total_feature_rows,
+                "chunk_artifacts": chunk_artifacts,
+                "per_client_artifacts": final_per_client,
+                "streaming_extraction": "pcap_chunk_sequential",
+            })
+            atomic_write_json(
+                self.output_dir / "capture_artifacts_index.json",
+                {
+                    "experiment_id": self.experiment_id,
+                    "pcap_chunks": len(chunks),
+                    "total_packets": total_packets,
+                    "feature_row_count": total_feature_rows,
+                    "chunk_artifacts": chunk_artifacts,
+                    "timestamp_utc": utc_now_iso(),
                 },
             )
-            result.update(artifacts)
-
-            inference = self.config.get(
-                "architecture_inference", {}
-            ) or {}
-            if (
-                bool(inference.get("enabled", False))
-                and bool(
-                    inference.get("final_enabled", True)
-                )
-                and artifacts.get("per_client_artifacts")
-            ):
-                result[
-                    "final_architecture_inference"
-                ] = run_final_architecture_inference(
-                    experiment_id=self.experiment_id,
-                    per_client_artifacts=artifacts[
-                        "per_client_artifacts"
-                    ],
-                    output_dir=self.output_dir,
-                    model_root=str(
-                        inference.get(
-                            "model_root",
-                            "fingerprinting_models",
-                        )
-                    ),
-                    feature_modes=tuple(
-                        inference.get(
-                            "feature_modes",
-                            ["full", "size_normalized"],
-                        )
-                    ),
-                )
         except Exception as exc:
-            result["capture_error"] = (
-                f"{type(exc).__name__}: {exc}"
-            )
+            result["capture_error"] = f"{type(exc).__name__}: {exc}"
+            result["capture_complete"] = False
 
+        atomic_write_json(
+            self.output_dir / "capture_chunks_manifest.json",
+            {
+                "experiment_id": self.experiment_id,
+                "run_id": self.config.get("experiment", {}).get("run_id"),
+                "pcap_chunks": len(chunks),
+                "total_packets": int(result.get("packet_count", 0)),
+                "total_capture_bytes": int(chunk_summary["total_capture_bytes"]),
+                "feature_row_count": int(result.get("feature_row_count", 0)),
+                "capture_complete": bool(result.get("capture_complete", False)),
+                "streaming_extraction": "pcap_chunk_sequential",
+                "rotation_enabled": bool(capture.get("rotation_enabled", True)),
+                "rotation_size_mb": int(capture.get("rotation_size_mb", 2048)),
+                "chunks": [
+                    {
+                        "index": index,
+                        "path": str(path),
+                        "size_bytes": int(path.stat().st_size),
+                        "sha256": sha256_file(path),
+                    }
+                    for index, path in enumerate(chunks, start=1)
+                ],
+                "capture_error": result.get("capture_error"),
+                "timestamp_utc": utc_now_iso(),
+            },
+        )
         return result
 
     def _write_summary(
@@ -1301,6 +1430,7 @@ class BlindTCPProxy:
                     self._capture_client_ips()
                 ),
                 "discovered_client_ips": self._capture_client_ips(),
+                "discovered_client_connections": self._capture_client_connections(),
                 "client_aliases": self._capture_client_aliases(),
                 "strict_client_isolation": bool(
                     self.config.get("capture", {}).get(

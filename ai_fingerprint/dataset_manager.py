@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .dataset_catalog import DATASETS, DatasetSpec, get_dataset_spec
+from .data_partition import make_partition_assignment
 
 
 UCI_HAR_URL = (
@@ -136,6 +137,7 @@ class BaseSource:
 class SyntheticSource(BaseSource):
     def __init__(self, config: Dict[str, Any], seed: int) -> None:
         self.config = config
+        self.seed = int(seed)
         self.rng = np.random.default_rng(seed)
         self.length = max(
             int(config["execution"]["repetitions"])
@@ -207,6 +209,11 @@ class SyntheticSource(BaseSource):
         raise DatasetError(
             f"Synthetic source does not support application={application!r}"
         )
+
+    def partition_label(self, index: int) -> int:
+        classes = max(int(self.config.get("ai", {}).get("num_classes", 2)), 1)
+        # Deterministic label used only for reproducible data partitioning.
+        return int((int(index) * 1103515245 + self.seed) % classes)
 
     def get_with_target(
         self,
@@ -784,10 +791,226 @@ class DatasetManager:
         self.spec = get_dataset_spec(self.name)
         self.rng = np.random.default_rng(int(config["execution"]["seed"]))
         self.source = self._build_source()
-        self._indices = np.arange(len(self.source), dtype=np.int64)
+        self._indices = self._build_partition_indices()
         if bool(config["data"].get("shuffle", True)):
             self.rng.shuffle(self._indices)
         self._cursor = 0
+
+    def _anomaly_labels(self) -> set[int]:
+        values = self.config.get("anomaly_detection", {}).get("anomaly_labels", [9])
+        return {int(value) for value in values}
+
+    def _is_anomaly_label(self, label: int) -> bool:
+        return int(label) in self._anomaly_labels()
+
+
+    def _partition_label(self, index: int) -> int:
+        # Partition labels are ground-truth data-management metadata only;
+        # they never enter proxy fingerprinting predictors.
+        method = getattr(self.source, "partition_label", None)
+        if callable(method):
+            return int(method(index))
+        dataset = getattr(self.source, "dataset", None)
+        if dataset is not None:
+            for attr in ("targets", "labels"):
+                values = getattr(dataset, attr, None)
+                if values is not None:
+                    value = values[index]
+                    try:
+                        return int(value.item())
+                    except AttributeError:
+                        return int(value)
+            try:
+                item = dataset[index]
+                if isinstance(item, (tuple, list)) and len(item) >= 2:
+                    value = item[1]
+                    try:
+                        return int(value.item())
+                    except AttributeError:
+                        return int(value)
+            except Exception:
+                pass
+        labels = getattr(self.source, "labels", None)
+        if labels is not None:
+            value = labels[index]
+            try:
+                return int(value.item())
+            except AttributeError:
+                return int(value)
+        hf = getattr(self.source, "dataset", None)
+        if hf is not None:
+            try:
+                item = hf[index]
+                if isinstance(item, dict) and "label" in item:
+                    return int(item["label"])
+            except Exception:
+                pass
+        try:
+            _, target = self.source.get_with_target(index)
+            array = np.asarray(target)
+            if array.size == 1:
+                return int(array.reshape(-1)[0])
+        except Exception:
+            pass
+        raise DatasetError(
+            f"Dataset {self.name!r} does not expose scalar class labels required "
+            "for Dirichlet non-IID partitioning"
+        )
+
+    def _build_partition_indices(self) -> np.ndarray:
+        all_indices = np.arange(len(self.source), dtype=np.int64)
+        partition = self.config.get("data", {}).get("partition", {}) or {}
+        deployment = str(self.config.get("execution", {}).get("deployment", ""))
+        role = str(self.config.get("node", {}).get("role", ""))
+        split = str(self.config.get("data", {}).get("split", "train"))
+        application = str(self.config.get("ai", {}).get("application", ""))
+
+        labels_all: np.ndarray | None = None
+        anomaly_data_role = str(
+            self.config.get("anomaly_detection", {}).get("data_role", "train")
+        ).strip().lower()
+        self._anomaly_calibration_indices = np.asarray([], dtype=np.int64)
+        if application == "anomaly_detection" and split == "train":
+            # Build one deterministic normal-only validation holdout before
+            # client partitioning. These samples are never used for local
+            # model training and the test split is never used to tune tau.
+            labels_all = np.asarray(
+                [self._partition_label(int(i)) for i in all_indices],
+                dtype=np.int64,
+            )
+            anomaly_labels = self._anomaly_labels()
+            normal_mask = np.asarray(
+                [int(label) not in anomaly_labels for label in labels_all],
+                dtype=bool,
+            )
+            normal_indices = all_indices[normal_mask]
+            if normal_indices.size < 2:
+                raise DatasetError(
+                    "Anomaly-detection training requires at least two normal samples after "
+                    f"excluding anomaly labels {sorted(anomaly_labels)}"
+                )
+            anomaly_cfg = self.config.get("anomaly_detection", {}) or {}
+            fraction = float(anomaly_cfg.get("calibration_fraction", 0.10))
+            base_seed = int(
+                partition.get("seed")
+                if partition.get("seed") is not None
+                else self.config.get("execution", {}).get("seed", 42)
+            )
+            calibration_seed = base_seed + int(
+                anomaly_cfg.get("calibration_seed_offset", 73001)
+            )
+            rng = np.random.default_rng(calibration_seed)
+            shuffled = normal_indices.copy()
+            rng.shuffle(shuffled)
+            calibration_count = max(1, int(round(normal_indices.size * fraction)))
+            calibration_count = min(calibration_count, normal_indices.size - 1)
+            calibration_indices = np.sort(shuffled[:calibration_count])
+            training_indices = np.sort(shuffled[calibration_count:])
+            self._anomaly_calibration_indices = calibration_indices
+            partition["anomaly_calibration_seed"] = calibration_seed
+            partition["anomaly_calibration_count"] = int(calibration_indices.size)
+            partition["anomaly_training_normal_count"] = int(training_indices.size)
+
+            if anomaly_data_role == "calibration":
+                self._partition_assignment = None
+                return calibration_indices
+            all_indices = training_indices
+
+        # Partition only client-side federated model-training data. A held-out
+        # anomaly calibration generator intentionally bypasses the client
+        # partition so every evaluator sees the same fixed validation set.
+        if not (
+            deployment == "federated"
+            and role == "client"
+            and split == "train"
+            and anomaly_data_role != "calibration"
+        ):
+            self._partition_assignment = None
+            return all_indices
+
+        client_count = max(int(partition.get("client_count", 1)), 1)
+        client_index = int(partition.get("client_index", 0))
+        seed = int(
+            partition.get("seed")
+            if partition.get("seed") is not None
+            else self.config["execution"].get("seed", 42)
+        )
+        kind = str(partition.get("type", "iid")).strip().lower().replace("-", "_")
+        if kind == "noniid":
+            kind = "non_iid"
+        alpha = float(partition.get("alpha", 0.5))
+
+        if labels_all is None:
+            labels_all = np.asarray(
+                [self._partition_label(int(i)) for i in np.arange(len(self.source), dtype=np.int64)],
+                dtype=np.int64,
+            )
+        partition_labels = labels_all[all_indices]
+        assignment = make_partition_assignment(
+            labels=partition_labels,
+            partition_type=kind,
+            client_index=client_index,
+            client_count=client_count,
+            seed=seed,
+            alpha=alpha,
+        )
+        self._partition_assignment = assignment
+        partition["type"] = assignment.partition_type
+        partition["alpha"] = assignment.alpha if assignment.alpha is not None else alpha
+        partition["seed"] = seed
+        partition["client_count"] = client_count
+        partition["client_index"] = client_index
+        partition["assignment_id"] = assignment.assignment_id
+        partition["disjoint"] = True
+        return np.asarray(all_indices[assignment.indices], dtype=np.int64)
+
+    def partition_summary(self) -> Dict[str, Any]:
+        partition = self.config.get("data", {}).get("partition", {}) or {}
+        assignment = getattr(self, "_partition_assignment", None)
+        if assignment is not None:
+            summary = assignment.summary()
+            summary.update(
+                {
+                    "type": summary.pop("partition_type"),
+                    "client_id": partition.get("client_id"),
+                    "disjoint": True,
+                    "source": partition.get("source", "server"),
+                    "anomaly_labels": (
+                        sorted(self._anomaly_labels())
+                        if self.config.get("ai", {}).get("application") == "anomaly_detection"
+                        else None
+                    ),
+                    "anomaly_training_excludes_labels": (
+                        self.config.get("ai", {}).get("application") == "anomaly_detection"
+                    ),
+                    "anomaly_data_role": str(self.config.get("anomaly_detection", {}).get("data_role", "train")),
+                    "anomaly_calibration_count": int(len(getattr(self, "_anomaly_calibration_indices", []))),
+                }
+            )
+            return summary
+
+        return {
+            "type": str(partition.get("type", "iid")),
+            "alpha": partition.get("alpha"),
+            "seed": partition.get("seed"),
+            "client_count": int(partition.get("client_count", 1)),
+            "client_index": int(partition.get("client_index", 0)),
+            "client_id": partition.get("client_id"),
+            "disjoint": bool(partition.get("disjoint", True)),
+            "sample_count": int(len(self._indices)),
+            "class_histogram": {},
+            "assignment_id": partition.get("assignment_id"),
+            "anomaly_labels": (
+                sorted(self._anomaly_labels())
+                if self.config.get("ai", {}).get("application") == "anomaly_detection"
+                else None
+            ),
+            "anomaly_training_excludes_labels": (
+                self.config.get("ai", {}).get("application") == "anomaly_detection"
+            ),
+            "anomaly_data_role": str(self.config.get("anomaly_detection", {}).get("data_role", "train")),
+            "anomaly_calibration_count": int(len(getattr(self, "_anomaly_calibration_indices", []))),
+        }
 
     def _local_path_for(self, name: str) -> Optional[Path]:
         local_paths = self.config["data"].get("local_paths", {}) or {}
@@ -897,9 +1120,10 @@ class DatasetManager:
 
     def __len__(self) -> int:
         max_samples = self.config["data"].get("max_samples")
+        available = len(self._indices)
         if max_samples is None:
-            return len(self.source)
-        return min(len(self.source), int(max_samples))
+            return available
+        return min(available, int(max_samples))
 
     def _next_index(self) -> int:
         usable = len(self)
@@ -932,6 +1156,53 @@ class DatasetManager:
             raise DatasetError(
                 f"Cannot batch samples with shapes {shapes}"
             ) from exc
+
+    def _next_index_for_anomaly(self, normal_only: bool | None) -> int:
+        usable = len(self)
+        if usable <= 0:
+            raise DatasetError(f"Dataset {self.name!r} is empty")
+        attempts = max(usable * 2, 16)
+        for _ in range(attempts):
+            index = self._next_index()
+            binary = 1 if self._is_anomaly_label(self._partition_label(index)) else 0
+            if normal_only is None or (normal_only and binary == 0) or (normal_only is False):
+                return index
+        requirement = "normal" if normal_only else "eligible"
+        raise DatasetError(
+            f"Unable to sample {requirement} anomaly-evaluation examples from {self.name!r}"
+        )
+
+    def sample_anomaly_batch(
+        self,
+        *,
+        normal_only: bool | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return inputs, reconstruction targets, and binary anomaly labels.
+
+        Labels are ground-truth evaluation metadata only and must never enter
+        proxy-side fingerprinting predictors. 0=normal, 1=anomaly.
+        """
+        batch_size = int(self.config["execution"]["batch_size"])
+        samples: list[np.ndarray] = []
+        binary_labels: list[int] = []
+        for _ in range(batch_size):
+            index = self._next_index_for_anomaly(normal_only)
+            sample = np.asarray(self.source.get(index), dtype=np.float32)
+            class_label = self._partition_label(index)
+            samples.append(sample)
+            binary_labels.append(1 if self._is_anomaly_label(class_label) else 0)
+        try:
+            inputs = np.stack(samples, axis=0)
+        except ValueError as exc:
+            raise DatasetError(
+                f"Cannot batch anomaly-evaluation samples with shapes "
+                f"{[tuple(sample.shape) for sample in samples]}"
+            ) from exc
+        return (
+            inputs,
+            np.asarray(inputs, dtype=np.float32).copy(),
+            np.asarray(binary_labels, dtype=np.int64),
+        )
 
     def sample_training_batch(
         self,

@@ -73,6 +73,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "auto_download": True,
         "shuffle": True,
         "max_samples": None,
+        "partition": {
+            "type": "iid",
+            "alpha": 0.5,
+            "seed": None,
+            "client_count": 1,
+            "client_index": 0,
+            "client_id": None,
+            "disjoint": True,
+            "source": "server",
+        },
         "local_paths": {
             "imagenet": None,
             "coco2017": None,
@@ -93,7 +103,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "learning_rate": 0.001,
     },
     "federated": {
-        "rounds": 10,
+        # full_scale enforces publication-scale runs of at least 100 global rounds.
+        # smoke_test is intentionally restricted to 1..99 rounds for debugging.
+        "mode": "full_scale",
+        "rounds": 100,
         "local_epochs": 1,
         "steps_per_epoch": 10,
         "expected_clients": 2,
@@ -106,6 +119,28 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "device": {
         "label": "custom",
         "operating_system": "unknown",
+    },
+    "anomaly_detection": {
+        # Reserve a deterministic normal-only subset from the training split
+        # exclusively for threshold calibration. It never participates in
+        # local model training and the test split is never used to tune tau.
+        "calibration_fraction": 0.10,
+        "calibration_seed_offset": 73001,
+        "data_role": "train",
+        # Class-label based anomaly protocol used only when
+        # ai.application=anomaly_detection. Training excludes these labels;
+        # held-out evaluation converts reconstruction error to anomaly scores.
+        "anomaly_labels": [9],
+        "threshold_percentile": 95.0,
+        "calibration_batches": 10,
+        "evaluation_batches": 10,
+        "evaluation_batch_size": 32,
+    },
+    "checkpoint": {
+        "enabled": True,
+        "interval_rounds": 10,
+        "retain_archives": 3,
+        "minimum_free_disk_gb": 5.0,
     },
     "performance_logging": {
         # Ground-truth/system-characterization only. These metrics are never
@@ -229,6 +264,20 @@ def validate_config(config: Dict[str, Any]) -> None:
     framework = config["ai"]["framework"]
     if framework not in registry.FRAMEWORKS:
         raise ConfigError(f"Unsupported framework: {framework}")
+
+    partition_cfg = config.get("data", {}).get("partition", {}) or {}
+    partition_type = str(partition_cfg.get("type", "iid")).strip().lower().replace("-", "_")
+    if partition_type == "noniid":
+        partition_type = "non_iid"
+    if partition_type not in {"iid", "non_iid"}:
+        raise ConfigError("data.partition.type must be iid or non_iid")
+    if partition_type == "non_iid":
+        try:
+            partition_alpha = float(partition_cfg.get("alpha", 0.5))
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("data.partition.alpha must be numeric") from exc
+        if partition_alpha <= 0:
+            raise ConfigError("data.partition.alpha must be positive for non-IID")
 
     device_label = str(config.get("device", {}).get("label", "")).strip().lower()
     if device_label in {
@@ -423,8 +472,16 @@ def validate_config(config: Dict[str, Any]) -> None:
 
     if deployment == "federated":
         federated = config.get("federated", {})
-        if int(federated.get("rounds", 0)) <= 0:
+        rounds = int(federated.get("rounds", 0))
+        mode = str(federated.get("mode", "full_scale")).strip().lower()
+        if mode not in {"full_scale", "smoke_test"}:
+            raise ConfigError("federated.mode must be full_scale or smoke_test")
+        if rounds <= 0:
             raise ConfigError("federated.rounds must be positive")
+        if mode == "full_scale" and rounds < 100:
+            raise ConfigError("full_scale federated experiments require at least 100 rounds")
+        if mode == "smoke_test" and rounds > 99:
+            raise ConfigError("smoke_test federated experiments must use 1 to 99 rounds")
         if int(federated.get("local_epochs", 0)) <= 0:
             raise ConfigError("federated.local_epochs must be positive")
         if int(federated.get("steps_per_epoch", 0)) <= 0:
@@ -439,6 +496,49 @@ def validate_config(config: Dict[str, Any]) -> None:
             raise ConfigError(
                 "v0.6 currently implements federated.aggregation=fedavg"
             )
+
+    anomaly_cfg = config.get("anomaly_detection", {}) or {}
+    if application == "anomaly_detection":
+        labels_raw = anomaly_cfg.get("anomaly_labels", [])
+        if not isinstance(labels_raw, (list, tuple)) or not labels_raw:
+            raise ConfigError(
+                "anomaly_detection.anomaly_labels must contain at least one class label"
+            )
+        try:
+            anomaly_labels = sorted({int(value) for value in labels_raw})
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                "anomaly_detection.anomaly_labels must contain integer labels"
+            ) from exc
+        num_classes = max(int(config.get("ai", {}).get("num_classes", 2)), 1)
+        invalid = [value for value in anomaly_labels if value < 0 or value >= num_classes]
+        if invalid:
+            raise ConfigError(
+                "anomaly_detection.anomaly_labels contains labels outside "
+                f"[0,{num_classes - 1}]: {invalid}"
+            )
+        if len(anomaly_labels) >= num_classes:
+            raise ConfigError(
+                "anomaly_detection must leave at least one normal class for training"
+            )
+        calibration_fraction = float(anomaly_cfg.get("calibration_fraction", 0.10))
+        if not 0.0 < calibration_fraction < 1.0:
+            raise ConfigError(
+                "anomaly_detection.calibration_fraction must be between 0 and 1"
+            )
+        data_role = str(anomaly_cfg.get("data_role", "train")).strip().lower()
+        if data_role not in {"train", "calibration"}:
+            raise ConfigError(
+                "anomaly_detection.data_role must be train or calibration"
+            )
+        percentile = float(anomaly_cfg.get("threshold_percentile", 95.0))
+        if not (0.0 < percentile < 100.0):
+            raise ConfigError(
+                "anomaly_detection.threshold_percentile must be between 0 and 100"
+            )
+        for field in ("calibration_batches", "evaluation_batches", "evaluation_batch_size"):
+            if int(anomaly_cfg.get(field, 0)) <= 0:
+                raise ConfigError(f"anomaly_detection.{field} must be positive")
 
     performance = config.get("performance_logging", {})
     if int(performance.get("server_eval_batches", 10)) <= 0:

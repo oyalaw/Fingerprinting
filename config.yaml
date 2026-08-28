@@ -1,0 +1,95 @@
+experiment:
+  experiment_id: exp1
+  output_dir: experiments\results\autoencoder\convolutional_autoencoder\convolutional_autoencoder_2layer\anomaly_detection\fashion_mnist\pytorch\exp1\client_3
+  results_root: experiments\results
+  existing_output_policy: error
+  run_id: null
+  experiment_number: 1
+  branch_dir: experiments\results\autoencoder\convolutional_autoencoder\convolutional_autoencoder_2layer\anomaly_detection\fashion_mnist\pytorch
+  run_dir: experiments\results\autoencoder\convolutional_autoencoder\convolutional_autoencoder_2layer\anomaly_detection\fashion_mnist\pytorch\exp1
+  storage_locator: autoencoder\convolutional_autoencoder\convolutional_autoencoder_2layer\anomaly_detection\fashion_mnist\pytorch\exp1
+  layout_version: '1.0'
+node:
+  role: client
+  host: 10.42.0.1
+  port: 8080
+coordination:
+  enabled: true
+  host: 10.42.0.195
+  port: 8081
+transport:
+  kind: tcp
+  certfile: null
+  keyfile: null
+  cafile: null
+  verify_peer: false
+  server_hostname: null
+  auto_generate_self_signed: false
+  self_signed_common_name: ai-fingerprint-server
+  self_signed_valid_days: 30
+  minimum_tls_version: TLSv1_2
+ai:
+  framework: pytorch
+  runtime: native
+  family: autoencoder
+  architecture: convolutional_autoencoder
+  variant: convolutional_autoencoder_2layer
+  application: anomaly_detection
+  dataset: fashion_mnist
+  model_artifact: null
+  num_classes: 10
+  input_size: 224
+  sequence_length: 128
+  input_dim: 9
+  vocab_size: 10000
+  max_text_length: 128
+  graph_nodes: 32
+  graph_features: 16
+data:
+  root: datasets
+  split: train
+  auto_download: true
+  shuffle: true
+  max_samples: null
+  local_paths:
+    imagenet: null
+    coco2017: null
+execution:
+  task: training
+  deployment: federated
+  operation: workload
+  repetitions: 20
+  warmup: 2
+  interval_ms: 250
+  batch_size: 1
+  precision: fp32
+  seed: 42
+  epochs: 1
+  steps_per_epoch: 20
+  learning_rate: 0.001
+federated:
+  rounds: 10
+  local_epochs: 1
+  steps_per_epoch: 10
+  expected_clients: 2
+  client_id: client_3
+  aggregation: fedavg
+  policy_source: server
+  policy_applied: false
+  policy_id: null
+device:
+  label: dell_laptop
+  operating_system: windows_11
+performance_logging:
+  enabled: true
+  client_round_probe: true
+  server_eval_batches: 10
+  server_eval_split: test
+  server_evaluation_required: false
+resource_monitor:
+  enabled: true
+  interval_ms: 500
+  network_interface: Wi-Fi
+  gpu_index: 0
+  power_enabled: true
+  disable_unusable_nvidia_smi: true

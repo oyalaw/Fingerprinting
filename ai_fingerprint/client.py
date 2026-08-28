@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import socket
 import ssl
 import time
@@ -16,6 +17,7 @@ from .federated_contract import (
     compact_contract,
     write_model_contract,
 )
+from .experiment_layout import materialize_role_metadata
 from .federated_policy import (
     apply_training_policy,
     write_effective_config,
@@ -35,6 +37,8 @@ from .resource_monitor import ResourceMonitor
 from .training_metrics import (
     PerformanceLogWriter,
     aggregate_batch_metrics,
+    collect_anomaly_batches,
+    evaluate_anomaly_batches,
     metric_delta,
     parameter_delta_l2_norm,
     parameter_l2_norm,
@@ -422,15 +426,48 @@ class ExperimentClient:
             if server_run_id:
                 self.config.setdefault("experiment", {})["run_id"] = server_run_id
             apply_training_policy(self.config, policy)
+            partition = self.config.setdefault("data", {}).setdefault("partition", {})
+            partition["client_index"] = int(policy_header.get("partition_index", 0))
+            partition["client_id"] = client_id
             policy_path = write_received_policy(self.config, policy)
             effective_config_path = write_effective_config(self.config)
+            # Refresh the original role/experiment manifests after the server
+            # supplies run_id and partition metadata.
+            materialize_role_metadata(self.config)
             self.logger.refresh_base(self.config)
+            # Re-emit the socket registration after server coordination so it
+            # carries the neutral run_id. Dataset preparation uses this exact
+            # (IP, source-port) tuple to reject stale/retry proxy connections.
+            self.logger.write(
+                "network_registration_confirmed",
+                client_id=client_id,
+                local_ip=str(local_address[0]),
+                local_port=int(local_address[1]),
+                remote_host=str(self.config["node"]["host"]),
+                remote_port=int(self.config["node"]["port"]),
+                transport=str(self.config["transport"]["kind"]),
+                run_id=self.config.get("experiment", {}).get("run_id"),
+            )
 
             fed = self.config["federated"]
             local_epochs = int(fed["local_epochs"])
             steps = int(fed["steps_per_epoch"])
             server_rounds = int(fed["rounds"])
             self.generator = InputGenerator(self.config)
+            try:
+                partition_summary = self.generator.manager.partition_summary()
+                partition_path = Path(self.config["experiment"]["output_dir"]) / "data_partition.json"
+                partition_path.write_text(
+                    __import__("json").dumps(partition_summary, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                partition_summary = {}
+                self.logger.write(
+                    "data_partition_summary_error",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
             workload = build_workload(self.config)
             model_contract = build_model_contract(
                 self.config,
@@ -450,13 +487,67 @@ class ExperimentClient:
                 else None
             )
 
+            anomaly_calibration_data = None
+            anomaly_evaluation_data = None
+            anomaly_cfg = self.config.get("anomaly_detection", {}) or {}
+            is_anomaly_detection = (
+                str(self.config.get("ai", {}).get("application", ""))
+                == "anomaly_detection"
+            )
+            if performance_enabled and is_anomaly_detection:
+                try:
+                    eval_batch_size = int(anomaly_cfg.get("evaluation_batch_size", 32))
+                    calibration_config = copy.deepcopy(self.config)
+                    calibration_config["data"]["split"] = "train"
+                    calibration_config.setdefault("anomaly_detection", {})["data_role"] = "calibration"
+                    calibration_config["data"]["shuffle"] = False
+                    calibration_config["execution"]["batch_size"] = eval_batch_size
+                    evaluation_config = copy.deepcopy(self.config)
+                    evaluation_config["data"]["split"] = str(
+                        performance_cfg.get("server_eval_split", "test")
+                    )
+                    evaluation_config["data"]["shuffle"] = False
+                    evaluation_config["execution"]["batch_size"] = eval_batch_size
+                    calibration_generator = InputGenerator(calibration_config)
+                    evaluation_generator = InputGenerator(evaluation_config)
+                    anomaly_calibration_data = collect_anomaly_batches(
+                        calibration_generator,
+                        int(anomaly_cfg.get("calibration_batches", 10)),
+                        normal_only=True,
+                    )
+                    anomaly_evaluation_data = collect_anomaly_batches(
+                        evaluation_generator,
+                        int(anomaly_cfg.get("evaluation_batches", 10)),
+                        normal_only=False,
+                    )
+                    self.logger.write(
+                        "anomaly_evaluation_prepared",
+                        client_id=client_id,
+                        anomaly_labels=anomaly_cfg.get("anomaly_labels"),
+                        threshold_percentile=anomaly_cfg.get("threshold_percentile"),
+                        calibration_batches=len(anomaly_calibration_data),
+                        evaluation_batches=len(anomaly_evaluation_data),
+                        evaluation_batch_size=eval_batch_size,
+                    )
+                except Exception as exc:
+                    self.logger.write(
+                        "anomaly_evaluation_setup_error",
+                        client_id=client_id,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    if bool(performance_cfg.get("server_evaluation_required", False)):
+                        raise
+
             print(
                 "[client] server-authoritative FL policy: "
                 f"input_size={self.config['ai']['input_size']} "
                 f"batch_size={self.config['execution']['batch_size']} "
                 f"learning_rate={self.config['execution']['learning_rate']} "
                 f"rounds={server_rounds} local_epochs={local_epochs} "
-                f"steps_per_epoch={steps}"
+                f"steps_per_epoch={steps} "
+                f"partition={self.config.get('data', {}).get('partition', {}).get('type')} "
+                f"partition_index={self.config.get('data', {}).get('partition', {}).get('client_index')}"
             )
             self.logger.write(
                 "federated_training_policy_received",
@@ -470,6 +561,11 @@ class ExperimentClient:
                 total_rounds=server_rounds,
                 local_epochs=local_epochs,
                 steps_per_epoch=steps,
+                partition_type=partition.get("type"),
+                partition_alpha=partition.get("alpha"),
+                partition_seed=partition.get("seed"),
+                partition_index=partition.get("client_index"),
+                partition_sample_count=partition_summary.get("sample_count"),
                 policy_json=str(policy_path),
                 effective_config_yaml=str(effective_config_path),
             )
@@ -497,6 +593,15 @@ class ExperimentClient:
                 header, payload = recv_frame(sock)
                 download_end = time.perf_counter_ns()
 
+                if header.get("status") == "waiting":
+                    self.logger.write(
+                        "federated_readiness_wait",
+                        client_id=client_id,
+                        ready_clients=header.get("ready_clients"),
+                        expected_clients=header.get("expected_clients"),
+                    )
+                    time.sleep(max(float(header.get("retry_after_ms", 250)) / 1000.0, 0.05))
+                    continue
                 if header.get("status") != "ok":
                     raise RuntimeError(
                         header.get(
@@ -527,7 +632,32 @@ class ExperimentClient:
                 probe_inputs = probe_targets = None
                 probe_before: Dict[str, Any] = {}
                 probe_after: Dict[str, Any] = {}
-                if round_probe_enabled:
+                anomaly_after_time_ms = 0.0
+                if (
+                    round_probe_enabled
+                    and is_anomaly_detection
+                    and anomaly_calibration_data is not None
+                    and anomaly_evaluation_data is not None
+                ):
+                    try:
+                        probe_before, _ = evaluate_anomaly_batches(
+                            workload,
+                            anomaly_calibration_data,
+                            anomaly_evaluation_data,
+                            threshold_percentile=float(
+                                anomaly_cfg.get("threshold_percentile", 95.0)
+                            ),
+                        )
+                    except Exception as exc:
+                        self.logger.write(
+                            "performance_probe_error",
+                            round=round_index,
+                            client_id=client_id,
+                            stage="before_local_training_anomaly",
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                elif round_probe_enabled:
                     try:
                         probe_inputs, probe_targets = self.generator.training_batch()
                         probe_before = aggregate_batch_metrics([
@@ -584,7 +714,48 @@ class ExperimentClient:
                 train_end = time.perf_counter_ns()
                 round_train_metrics = aggregate_batch_metrics(batch_metrics)
 
-                if probe_inputs is not None and probe_targets is not None:
+                if (
+                    is_anomaly_detection
+                    and performance_enabled
+                    and anomaly_calibration_data is not None
+                    and anomaly_evaluation_data is not None
+                ):
+                    try:
+                        probe_after, anomaly_after_time_ms = evaluate_anomaly_batches(
+                            workload,
+                            anomaly_calibration_data,
+                            anomaly_evaluation_data,
+                            threshold_percentile=float(
+                                anomaly_cfg.get("threshold_percentile", 95.0)
+                            ),
+                        )
+                        # Preserve reconstruction training loss while populating
+                        # the classification-style fields from held-out anomaly
+                        # evaluation so round_metrics.csv has meaningful
+                        # accuracy/precision/recall/F1 for anomaly detection.
+                        for key in (
+                            "accuracy", "precision", "recall", "f1",
+                            "anomaly_accuracy", "anomaly_precision",
+                            "anomaly_recall", "anomaly_f1", "anomaly_auroc",
+                            "anomaly_auprc", "anomaly_threshold",
+                            "anomaly_threshold_percentile", "anomaly_tp",
+                            "anomaly_fp", "anomaly_tn", "anomaly_fn",
+                            "anomaly_eval_samples", "anomaly_samples",
+                            "normal_samples", "normal_error_mean",
+                            "anomaly_error_mean",
+                        ):
+                            if key in probe_after:
+                                round_train_metrics[key] = probe_after[key]
+                    except Exception as exc:
+                        self.logger.write(
+                            "performance_probe_error",
+                            round=round_index,
+                            client_id=client_id,
+                            stage="after_local_training_anomaly",
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                elif probe_inputs is not None and probe_targets is not None:
                     try:
                         probe_after = aggregate_batch_metrics([
                             dict(workload.evaluate_batch(probe_inputs, probe_targets))
@@ -653,6 +824,12 @@ class ExperimentClient:
                     "model_contract": compact_model_contract,
                     "client_model_norm_l2": local_model_norm,
                     "client_update_norm_l2": update_norm,
+                    "partition_type": partition.get("type"),
+                    "partition_alpha": partition.get("alpha"),
+                    "partition_seed": partition.get("seed"),
+                    "partition_index": partition.get("client_index"),
+                    "partition_sample_count": partition_summary.get("sample_count"),
+                    "partition_assignment_id": partition_summary.get("assignment_id"),
                 }
                 upload_header.update(wire_metrics)
 
@@ -772,16 +949,42 @@ class ExperimentClient:
                         ),
                         "training_policy_id": policy.get("policy_id"),
                         "policy_source": "server",
+                        "partition_type": partition.get("type"),
+                        "partition_alpha": partition.get("alpha"),
+                        "partition_seed": partition.get("seed"),
+                        "partition_index": partition.get("client_index"),
+                        "partition_disjoint": partition.get("disjoint", True),
+                        "partition_sample_count": partition_summary.get("sample_count"),
                         "train_loss": round_train_metrics.get("loss"),
                         "train_accuracy": round_train_metrics.get("accuracy"),
                         "train_precision": round_train_metrics.get("precision"),
                         "train_recall": round_train_metrics.get("recall"),
                         "train_f1": round_train_metrics.get("f1"),
+                        "train_macro_precision": round_train_metrics.get("macro_precision"),
+                        "train_macro_recall": round_train_metrics.get("macro_recall"),
+                        "train_macro_f1": round_train_metrics.get("macro_f1"),
                         "train_reconstruction_loss": round_train_metrics.get("reconstruction_loss"),
                         "train_mse": round_train_metrics.get("mse"),
                         "train_mae": round_train_metrics.get("mae"),
                         "train_kl_loss": round_train_metrics.get("kl_loss"),
                         "vae_beta": round_train_metrics.get("vae_beta"),
+                        "anomaly_accuracy": round_train_metrics.get("anomaly_accuracy"),
+                        "anomaly_precision": round_train_metrics.get("anomaly_precision"),
+                        "anomaly_recall": round_train_metrics.get("anomaly_recall"),
+                        "anomaly_f1": round_train_metrics.get("anomaly_f1"),
+                        "anomaly_auroc": round_train_metrics.get("anomaly_auroc"),
+                        "anomaly_auprc": round_train_metrics.get("anomaly_auprc"),
+                        "anomaly_threshold": round_train_metrics.get("anomaly_threshold"),
+                        "anomaly_threshold_percentile": round_train_metrics.get("anomaly_threshold_percentile"),
+                        "anomaly_tp": round_train_metrics.get("anomaly_tp"),
+                        "anomaly_fp": round_train_metrics.get("anomaly_fp"),
+                        "anomaly_tn": round_train_metrics.get("anomaly_tn"),
+                        "anomaly_fn": round_train_metrics.get("anomaly_fn"),
+                        "anomaly_eval_samples": round_train_metrics.get("anomaly_eval_samples"),
+                        "anomaly_samples": round_train_metrics.get("anomaly_samples"),
+                        "normal_samples": round_train_metrics.get("normal_samples"),
+                        "normal_error_mean": round_train_metrics.get("normal_error_mean"),
+                        "anomaly_error_mean": round_train_metrics.get("anomaly_error_mean"),
                         "train_loss_before": before_loss,
                         "train_loss_after": after_loss,
                         "loss_change": metric_delta(
@@ -801,14 +1004,18 @@ class ExperimentClient:
                             improvement_direction="down",
                         ),
                         "round_probe_samples": (
-                            int(probe_inputs.shape[0])
-                            if probe_inputs is not None
-                            else 0
+                            int(probe_after.get("evaluated_samples", 0) or 0)
+                            if is_anomaly_detection
+                            else (int(probe_inputs.shape[0]) if probe_inputs is not None else 0)
                         ),
                         "metric_source": (
-                            "local_training_examples+held_out_round_probe"
-                            if probe_inputs is not None
-                            else "local_training_examples"
+                            "local_training_examples+held_out_anomaly_evaluation"
+                            if is_anomaly_detection and probe_after
+                            else (
+                                "local_training_examples+held_out_round_probe"
+                                if probe_inputs is not None
+                                else "local_training_examples"
+                            )
                         ),
                         "download_time_sec": (download_end - download_start) / 1_000_000_000.0,
                         "training_time_sec": (train_end - train_start) / 1_000_000_000.0,

@@ -148,6 +148,7 @@ def start_capture_process(
     hosts: Optional[Sequence[str]] = None,
     exclude_hosts: Optional[Sequence[str]] = None,
     snaplen_bytes: Optional[int] = None,
+    rotation_size_mb: Optional[int] = None,
 ) -> subprocess.Popen:
     dumpcap = shutil.which("dumpcap")
     tshark = shutil.which("tshark")
@@ -169,6 +170,12 @@ def start_capture_process(
         "-w",
         str(output_path),
     ]
+
+    if rotation_size_mb is not None and int(rotation_size_mb) > 0:
+        # dumpcap/tshark ring buffers express filesize in KiB. Omitting a
+        # file-count limit allows the capture to rotate for the entire run.
+        rotation_kib = int(rotation_size_mb) * 1024
+        command.extend(["-b", f"filesize:{rotation_kib}"])
 
     if snaplen_bytes is not None and int(snaplen_bytes) > 0:
         # The original on-wire frame length remains available in the PCAP
@@ -205,6 +212,34 @@ def start_capture_process(
 
 def stop_capture_process(process: subprocess.Popen) -> None:
     _stop_capture_process(process)
+
+
+def discover_capture_chunks(output: str | Path) -> list[Path]:
+    """Return chronological PCAP/PCAPNG files belonging to one logical capture."""
+    base = Path(output)
+    if not base.parent.exists():
+        return []
+    suffixes = {".pcap", ".pcapng"}
+    candidates = [
+        path for path in base.parent.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in suffixes
+        and (path == base or path.stem.startswith(base.stem))
+        and path.stat().st_size > 0
+    ]
+    return sorted(candidates, key=lambda path: (path.stat().st_mtime_ns, path.name))
+
+
+def capture_chunks_summary(output: str | Path) -> Dict[str, Any]:
+    chunks = discover_capture_chunks(output)
+    return {
+        "pcap_chunks": len(chunks),
+        "total_capture_bytes": int(sum(path.stat().st_size for path in chunks)),
+        "chunks": [
+            {"index": index, "path": str(path), "size_bytes": int(path.stat().st_size)}
+            for index, path in enumerate(chunks, start=1)
+        ],
+    }
 
 
 def run_capture(

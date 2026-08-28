@@ -103,3 +103,9 @@ window_size_sec identifies the independent feature-window scale (for example
 
 window_size_sec, window_index, window_start_sec, window_end_sec, and the global
 alignment offsets are metadata only and are never model predictors.
+
+
+v0.9.6 window quality metadata
+packet_information_threshold: minimum packet count used for window sufficiency auditing.
+packet_information_ok: 1 when packet_count_total meets the threshold, otherwise 0.
+These two fields are grouping and quality metadata and are not fingerprint predictors. Sparse windows remain in the dataset.

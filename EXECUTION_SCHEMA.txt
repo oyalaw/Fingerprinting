@@ -60,7 +60,7 @@ execution:
   learning_rate: 0.001
 
 federated:
-  rounds: 10
+  rounds: 100
   local_epochs: 1
   steps_per_epoch: 10
   expected_clients: 2

@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, Tuple
 import yaml
 
 from .experiment_coordination import ensure_run_id
+from .experiment_integrity import atomic_write_json, reproducibility_metadata
 
 
 EXP_RE = re.compile(r"^exp(?P<number>[1-9][0-9]*)$", re.IGNORECASE)
@@ -218,6 +219,7 @@ def materialize_role_metadata(config: Dict[str, Any]) -> None:
         "output_dir": str(output_dir),
         "role": config.get("node", {}).get("role", "proxy"),
         "layout_version": experiment.get("layout_version", "legacy"),
+        "data_partition": dict(config.get("data", {}).get("partition", {}) or {}),
     }
     if "ai" in config:
         ai = config.get("ai", {})
@@ -252,11 +254,19 @@ def materialize_role_metadata(config: Dict[str, Any]) -> None:
                 "task": config.get("execution", {}).get("task"),
                 "deployment": config.get("execution", {}).get("deployment"),
                 "transport": config.get("transport", {}).get("kind"),
+                "data_partition": dict(config.get("data", {}).get("partition", {}) or {}),
+                "federated_mode": config.get("federated", {}).get("mode"),
+                "target_rounds": config.get("federated", {}).get("rounds"),
+                "execution_seed": config.get("execution", {}).get("seed"),
             }
             with (run_dir / "experiment_manifest.json").open(
                 "w", encoding="utf-8"
             ) as handle:
                 json.dump(common_manifest, handle, indent=2, sort_keys=True)
+    # Capture reproducibility state at role startup. This is scientific
+    # metadata only and is never admitted into proxy fingerprint predictors.
+    role_manifest["reproducibility"] = reproducibility_metadata(config)
+    atomic_write_json(output_dir / "reproducibility.json", role_manifest["reproducibility"])
     with (output_dir / "role_manifest.json").open("w", encoding="utf-8") as handle:
         json.dump(role_manifest, handle, indent=2, sort_keys=True)
 
@@ -269,14 +279,29 @@ def write_role_status(
 ) -> None:
     output_dir = Path(config["experiment"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    normalized = str(status).upper()
+    normalized = {"COMPLETE": "COMPLETED", "STOPPED": "PARTIAL"}.get(
+        normalized, normalized
+    )
+    status_path = output_dir / "experiment_status.json"
+    # Generic runner completion must not erase a more specific terminal status
+    # written by the server or proxy integrity checks.
+    if normalized == "COMPLETED" and status_path.exists():
+        try:
+            existing = json.loads(status_path.read_text(encoding="utf-8"))
+            existing_status = str(existing.get("status", "")).upper()
+            if existing_status in {"METRICS_INCOMPLETE", "CAPTURE_INCOMPLETE", "PARTIAL", "FAILED"}:
+                return
+        except Exception:
+            pass
     payload = {
         "experiment_id": config["experiment"].get("experiment_id"),
         "run_id": config["experiment"].get("run_id"),
         "storage_locator": config["experiment"].get("storage_locator"),
         "role": config.get("node", {}).get("role", "proxy"),
-        "status": str(status).upper(),
+        "status": normalized,
     }
     if error:
         payload["error"] = error
-    with (output_dir / "experiment_status.json").open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
+    atomic_write_json(status_path, payload)
+

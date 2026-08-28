@@ -48,6 +48,11 @@ capture:
   window_seconds: 5.0
   window_sizes_sec: [0.5, 1.0, 2.0, 5.0]
   allow_single_scale: false
+  rotation_enabled: true
+  rotation_size_mb: 2048
+  minimum_free_disk_gb: 20.0
+  disk_preflight_required: true
+  packet_information_threshold: 2
 
 architecture_inference:
   enabled: true

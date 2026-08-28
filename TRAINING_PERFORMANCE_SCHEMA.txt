@@ -1,85 +1,80 @@
-AI FINGERPRINT EXPERIMENT — TRAINING PERFORMANCE SCHEMA v1.1
+AI FINGERPRINT EXPERIMENT — TRAINING PERFORMANCE SCHEMA v1.2
 ============================================================
 
 Scope
 -----
-These files are produced only for federated training when performance_logging.enabled=true. They are ground-truth/system-characterization artifacts and are forbidden as proxy fingerprinting predictors.
+These files are produced for federated training when performance_logging.enabled=true.
+They are ground-truth/system-characterization artifacts and are forbidden as proxy
+fingerprinting predictors.
+
+Full-scale round policy
+-----------------------
+The interactive federated server now defaults to 100 global rounds and rejects values
+below 100. Clients never choose the global round count; they receive it from the
+server-authoritative FL policy. Scripted/unit-test configurations may still override
+this for development.
 
 Client: round_metrics.csv
 -------------------------
-One row per completed client round.
+One row per completed client round. Classification workloads record train_loss,
+train_accuracy, train_precision, train_recall and train_f1. Reconstruction workloads
+record reconstruction loss/MSE/MAE.
 
-Identity/context:
-experiment_id, client_id, round, family, architecture, variant, application,
-dataset, framework, runtime, precision, input_size, batch_size
+For application=anomaly_detection the client additionally performs held-out anomaly
+evaluation after local training. The existing train_accuracy/train_precision/
+train_recall/train_f1 fields are populated from that held-out evaluation while
+train_loss continues to describe local reconstruction training loss. Additional fields:
 
-Server-authoritative FL policy context:
-global_rounds, local_epochs, steps_per_epoch, learning_rate,
-training_policy_id, policy_source
+anomaly_accuracy, anomaly_precision, anomaly_recall, anomaly_f1, anomaly_auroc,
+anomaly_auprc, anomaly_threshold, anomaly_threshold_percentile, anomaly_tp,
+anomaly_fp, anomaly_tn, anomaly_fn, anomaly_eval_samples, anomaly_samples,
+normal_samples, normal_error_mean, anomaly_error_mean.
 
-Local training:
-local_steps, train_samples,
-train_loss, train_accuracy, train_precision, train_recall, train_f1,
-train_reconstruction_loss, train_mse, train_mae, train_kl_loss, vae_beta
+Anomaly-specific client files
+-----------------------------
+For anomaly detection the same round is also written to:
+  anomaly_metrics.csv
+  anomaly_metrics_<partition>.csv
 
-Round probe:
-train_loss_before, train_loss_after, loss_change,
-accuracy_before, accuracy_after, accuracy_change,
-f1_before, f1_after, f1_change,
-mse_before, mse_after, mse_change,
-round_probe_samples, metric_source
+A concise task-specific result is written to:
+  anomaly_detection_metrics.csv
+  anomaly_detection_metrics_iid.csv
+  anomaly_detection_metrics_non_iid_alpha_<alpha>.csv
 
-Timing/communication:
-download_time_sec, training_time_sec, upload_time_sec, sync_wait_time_sec,
-transaction_time_sec, model_size_bytes
-
-Model geometry:
-global_model_norm_l2, local_model_norm_l2, update_norm_l2
-
-Timestamps:
-timestamp_start_utc, timestamp_end_utc
+The concise file directly contains:
+  loss, accuracy, precision, recall, f1_score, auroc, auprc, threshold,
+  tp, fp, tn, fn, reconstruction_loss, mse, mae.
 
 Server: client_update_metrics.csv
 ---------------------------------
-One row per received client update per round.
-
-experiment_id, round, client_id, num_examples, payload_bytes,
-client_loss, client_accuracy, client_precision, client_recall, client_f1,
-client_reconstruction_loss, client_mse, client_mae, client_kl_loss, vae_beta,
-client_model_norm_l2, client_update_norm_l2, receive_timestamp_utc
+One row per received client update per round. In anomaly-detection experiments the
+server records the client's anomaly accuracy/precision/recall/F1/AUROC/AUPRC,
+threshold and confusion counts in addition to reconstruction metrics and model norms.
 
 Server: round_metrics.csv
 -------------------------
-One row per completed FedAvg aggregation.
+One row per completed FedAvg aggregation. For anomaly detection, global_accuracy,
+global_precision, global_recall and global_f1 are populated from held-out global
+anomaly evaluation. global_loss remains the reconstruction/evaluation loss. AUROC,
+AUPRC, threshold and confusion counts are stored in the anomaly_* fields.
 
-Identity/context:
-experiment_id, round, family, architecture, variant, application, dataset,
-framework, runtime, aggregation_rule
+Anomaly protocol
+----------------
+Configured anomaly class labels are excluded from training. Remaining normal examples
+are partitioned IID or Dirichlet non-IID across clients. The reconstruction target
+remains x -> x. Each round:
+  1. The current model scores held-out normal calibration samples by reconstruction MSE.
+  2. threshold = configured percentile (default 95th) of normal calibration scores.
+  3. A separate held-out normal+anomaly evaluation set is scored.
+  4. accuracy, precision, recall, F1, AUROC, AUPRC and confusion counts are computed.
 
-Server-authoritative FL policy context:
-input_size, batch_size, learning_rate, global_rounds, local_epochs,
-steps_per_epoch, training_policy_id, policy_source
+The server distributes anomaly labels and evaluation protocol to clients as part of the
+server-authoritative policy. These labels/metrics are never admitted into proxy X.
 
-Participation:
-clients_expected, clients_received, client_ids, total_examples
 
-Global learning performance:
-global_loss, global_accuracy, global_precision, global_recall, global_f1,
-global_reconstruction_loss, global_mse, global_mae, global_kl_loss, vae_beta,
-evaluation_samples, evaluation_split
-
-Aggregation/model geometry:
-aggregation_time_ms, evaluation_time_ms,
-global_model_norm_l2, global_update_norm_l2,
-mean_client_update_norm_l2, std_client_update_norm_l2, model_size_bytes
-
-Per-round traffic/system timing:
-bytes_received_round, bytes_sent_round, round_duration_sec
-
-Convergence deltas:
-loss_change (positive means loss improved),
-accuracy_change (positive means accuracy improved),
-f1_change (positive means F1 improved)
-
-Timestamps/errors:
-timestamp_start_utc, timestamp_end_utc, evaluation_error
+v0.9.6 classification naming
+Multiclass classification additionally records macro_precision, macro_recall, and macro_f1.
+Legacy precision, recall, and f1 columns are retained as aliases for compatibility.
+Anomaly detection precision, recall, and f1 remain binary positive class metrics.
+Server round_metrics.csv records evaluation_time_ms independently from aggregation_time_ms.
+Metric CSV rows are flushed and fsynced after every completed write.

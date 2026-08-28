@@ -27,5 +27,15 @@ class InputGenerator:
     ) -> tuple[np.ndarray, np.ndarray]:
         return self.manager.sample_training_batch()
 
+    def anomaly_batch(
+        self,
+        *,
+        normal_only: bool | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return self.manager.sample_anomaly_batch(normal_only=normal_only)
+
     def reset(self) -> None:
         self.manager.reset()
+
+    def partition_summary(self):
+        return self.manager.partition_summary()

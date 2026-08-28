@@ -229,6 +229,7 @@ class LiveArchitectureMonitor:
         # Buffer them briefly by peer and release them only after the proxy
         # confirms an actual accepted client connection.
         self._pending_packets: Dict[str, Deque[PacketRecord]] = {}
+        self._connection_aliases: Dict[Tuple[str, int], str] = {}
         self._capture_start_epoch: Optional[float] = None
         self._feature_writer = None
         self._feature_handle = None
@@ -427,6 +428,35 @@ class LiveArchitectureMonitor:
         )
         return summary
 
+    def register_connection(
+        self,
+        client_ip: str,
+        client_port: int,
+        *,
+        alias: Optional[str] = None,
+    ) -> str:
+        value = str(client_ip).strip()
+        port = int(client_port)
+        if not value or port <= 0:
+            raise LiveInferenceError("client_ip and client_port are required")
+        key = (value, port)
+        with self._lock:
+            existing = self._connection_aliases.get(key)
+            if existing:
+                return existing
+            selected = str(alias or "").strip() or f"trace_{len(self._connection_aliases)+1:03d}"
+            self._connection_aliases[key] = selected
+            if value not in self.client_ips:
+                self.client_ips.append(value)
+            pending_key = f"{value}:{port}"
+            pending = list(self._pending_packets.pop(pending_key, ()))
+            for packet in pending:
+                packet = replace(packet, direction=resolve_direction(
+                    src_ip=packet.src_ip, dst_ip=packet.dst_ip, client_ips=[value]
+                ))
+                self._append_registered_packet_locked(selected, packet)
+            return selected
+
     def register_client(
         self,
         client_ip: str,
@@ -488,18 +518,18 @@ class LiveArchitectureMonitor:
             self._traces[alias] = state
         state.packets.append(packet)
 
-    def _infer_client_peer(self, packet: PacketRecord) -> Optional[str]:
+    def _infer_client_peer(self, packet: PacketRecord) -> Optional[Tuple[str, int]]:
         if not self.proxy_ip:
             return None
         if packet.src_ip == self.proxy_ip and packet.dst_ip:
-            peer = packet.dst_ip
+            peer, peer_port = packet.dst_ip, packet.dst_port
         elif packet.dst_ip == self.proxy_ip and packet.src_ip:
-            peer = packet.src_ip
+            peer, peer_port = packet.src_ip, packet.src_port
         else:
             return None
-        if peer in self._exclude_host_set:
+        if peer in self._exclude_host_set or int(peer_port) <= 0:
             return None
-        return peer
+        return peer, int(peer_port)
 
     def _reader_loop(self) -> None:
         assert self._process is not None
@@ -517,24 +547,21 @@ class LiveArchitectureMonitor:
                 line.rstrip("\n").split("\t"),
                 client_snapshot,
             )
-            client_ip = None
-            if packet.src_ip in alias_snapshot:
-                client_ip = packet.src_ip
-            elif packet.dst_ip in alias_snapshot:
-                client_ip = packet.dst_ip
-            if client_ip is None:
-                peer = self._infer_client_peer(packet)
-                if peer is not None:
-                    with self._lock:
-                        pending = self._pending_packets.get(peer)
-                        if pending is None:
-                            pending = deque(maxlen=256)
-                            self._pending_packets[peer] = pending
-                        pending.append(packet)
+            peer = self._infer_client_peer(packet)
+            if peer is None:
                 continue
-
             with self._lock:
-                alias = self.aliases[client_ip]
+                alias = self._connection_aliases.get(peer)
+            if alias is None:
+                pending_key = f"{peer[0]}:{peer[1]}"
+                with self._lock:
+                    pending = self._pending_packets.get(pending_key)
+                    if pending is None:
+                        pending = deque(maxlen=256)
+                        self._pending_packets[pending_key] = pending
+                    pending.append(packet)
+                continue
+            with self._lock:
                 self._append_registered_packet_locked(alias, packet)
 
     def _ticker_loop(self) -> None:

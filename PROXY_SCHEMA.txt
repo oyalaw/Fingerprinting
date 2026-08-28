@@ -208,3 +208,13 @@ The real-time sidecar observes the same client-facing interface and BPF scope as
 the archival capture. It neither terminates TLS nor parses AI payloads. If no
 trained bundle is present it emits live network features but no synthetic
 prediction.
+
+v0.9.4 connection-granular isolation
+------------------------------------
+In automatic discovery mode, accepted proxy sessions are identified by exact
+(client_ip, client_source_port). Each accepted connection receives its own
+neutral trace alias. Offline preparation confirms traces against client-side
+network_registration_confirmed events using neutral run_id + IP + source port.
+When confirmed mappings exist for a run, unmatched retry/stale connections are
+excluded from classifier input. These identity values remain audit/grouping
+metadata only.

@@ -1,3 +1,48 @@
+# Changelog
+
+## 0.9.6 — Full scale experiment hardening
+
+- Added explicit `full_scale` and `smoke_test` federated modes. Full scale requires at least 100 global rounds; smoke tests allow 1 through 99.
+- Made anomaly threshold calibration genuinely disjoint from training by reserving a deterministic normal only validation subset before IID or non IID client partitioning.
+- Added explicit multiclass `macro_precision`, `macro_recall`, and `macro_f1` fields while preserving legacy aliases.
+- Added proxy disk preflight, 2048 MB default PCAP ring rotation, chunk hashing, logical capture manifests, and sequential per chunk extraction.
+- Retained sparse windows and added packet information sufficiency metadata that is excluded from classifier predictors.
+- Added per round progress persistence, periodic model checkpoints, immediate fsync of metric CSV rows, and reproducibility manifests.
+- Added terminal experiment states `COMPLETED`, `PARTIAL`, `FAILED`, `CAPTURE_INCOMPLETE`, and `METRICS_INCOMPLETE`.
+- Added `validate_experiment_run.py` for final cross role validation.
+- Added regression tests for the new full scale safeguards.
+
+Validation: 135 automated tests pass; Python compilation passes.
+
+## 0.9.5 — Anomaly metrics and full-scale round floor
+
+- Filled anomaly-detection accuracy, precision, recall and F1 at both client and server round levels.
+- Added AUROC, AUPRC, threshold, confusion counts, normal/anomaly error means.
+- Added held-out-class anomaly protocol: configured anomaly classes are excluded from training.
+- Added normal calibration thresholding (default 95th percentile reconstruction MSE).
+- Added concise `anomaly_detection_metrics*.csv` files with `loss`, `accuracy`, `precision`, `recall`, and `f1_score`.
+- Preserved separate IID/non-IID metric files.
+- Server distributes the complete anomaly-evaluation protocol to clients.
+- Interactive full-scale FL now defaults to and enforces at least 100 global rounds.
+- Added anomaly labels and metrics to the forbidden proxy predictor policy.
+- Added regression tests for anomaly metrics, anomaly training exclusion, policy propagation and 100-round default.
+
+# 0.9.4
+
+- Added server-authoritative IID vs non-IID federated data partitioning.
+- Added deterministic disjoint IID shards and Dirichlet label-skew non-IID shards.
+- Added automatic per-exp partition seeds and client partition-slot assignment.
+- Added an all-clients-ready barrier before round 0.
+- Changed proxy per-client artifacts to connection-granular IP+source-port traces when accepted-connection metadata is available.
+- Dataset preparation now resolves proxy traces against exact client network-registration IP+port and excludes unmatched retry/stale connections.
+- Added `data_partition.json` and partition metadata to client/server round metrics.
+- Added partition-specific metric CSV copies for IID and non-IID conditions.
+- Client manifests are refreshed after neutral run ID/policy synchronization.
+- Server now exits after final acknowledgements from all expected clients so status becomes COMPLETE automatically.
+- Added v0.9.4 regression tests.
+
+Validation: 124 automated tests pass; Python compilation and ZIP integrity checks pass.
+
 # 0.9.3
 
 - Removed the interactive proxy storage-locator prompt. The proxy no longer receives `family/architecture/variant/application/dataset/framework/expN` during capture.

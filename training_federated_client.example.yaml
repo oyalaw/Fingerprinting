@@ -38,6 +38,15 @@ data:
   auto_download: true
   shuffle: true
   max_samples: null
+  partition:
+    type: iid
+    alpha: 0.5
+    seed: null
+    client_count: 1
+    client_index: 0
+    client_id: null
+    disjoint: true
+    source: server
   local_paths:
     imagenet: null
     coco2017: null
@@ -57,6 +66,16 @@ execution:
 device:
   label: android_phone
   operating_system: android
+anomaly_detection:
+  calibration_fraction: 0.10
+  calibration_seed_offset: 73001
+  data_role: train
+  anomaly_labels: [9]
+  threshold_percentile: 95.0
+  calibration_batches: 10
+  evaluation_batches: 10
+  evaluation_batch_size: 32
+
 performance_logging:
   enabled: true
   client_round_probe: true
@@ -70,7 +89,8 @@ resource_monitor:
   gpu_index: 0
   power_enabled: true
 federated:
-  rounds: 10
+  mode: full_scale
+  rounds: 100
   local_epochs: 1
   steps_per_epoch: 10
   expected_clients: 2
