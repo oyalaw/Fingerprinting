@@ -370,17 +370,26 @@ VARIANTS: Dict[str, VariantSpec] = {
     ),
     "vae_fc": _spec(
         "autoencoder", "variational_autoencoder",
-        {"reconstruction": RECONSTRUCTION_DATASETS},
+        {
+            "reconstruction": RECONSTRUCTION_DATASETS,
+            "anomaly_detection": RECONSTRUCTION_DATASETS,
+        },
         {"pytorch", "tensorflow"},
     ),
     "vae_conv": _spec(
         "autoencoder", "variational_autoencoder",
-        {"reconstruction": RECONSTRUCTION_DATASETS},
+        {
+            "reconstruction": RECONSTRUCTION_DATASETS,
+            "anomaly_detection": RECONSTRUCTION_DATASETS,
+        },
         {"pytorch", "tensorflow"},
     ),
     "beta_vae": _spec(
         "autoencoder", "variational_autoencoder",
-        {"reconstruction": RECONSTRUCTION_DATASETS},
+        {
+            "reconstruction": RECONSTRUCTION_DATASETS,
+            "anomaly_detection": RECONSTRUCTION_DATASETS,
+        },
         {"pytorch", "tensorflow"},
     ),
 

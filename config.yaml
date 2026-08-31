@@ -1,13 +1,13 @@
 experiment:
   experiment_id: exp1
-  output_dir: experiments\results\autoencoder\convolutional_autoencoder\convolutional_autoencoder_2layer\anomaly_detection\fashion_mnist\pytorch\exp1\client_3
+  output_dir: experiments\results\autoencoder\dense_autoencoder\dense_autoencoder_5layer\anomaly_detection\fashion_mnist\pytorch\exp1\client_3
   results_root: experiments\results
   existing_output_policy: error
   run_id: null
   experiment_number: 1
-  branch_dir: experiments\results\autoencoder\convolutional_autoencoder\convolutional_autoencoder_2layer\anomaly_detection\fashion_mnist\pytorch
-  run_dir: experiments\results\autoencoder\convolutional_autoencoder\convolutional_autoencoder_2layer\anomaly_detection\fashion_mnist\pytorch\exp1
-  storage_locator: autoencoder\convolutional_autoencoder\convolutional_autoencoder_2layer\anomaly_detection\fashion_mnist\pytorch\exp1
+  branch_dir: experiments\results\autoencoder\dense_autoencoder\dense_autoencoder_5layer\anomaly_detection\fashion_mnist\pytorch
+  run_dir: experiments\results\autoencoder\dense_autoencoder\dense_autoencoder_5layer\anomaly_detection\fashion_mnist\pytorch\exp1
+  storage_locator: autoencoder\dense_autoencoder\dense_autoencoder_5layer\anomaly_detection\fashion_mnist\pytorch\exp1
   layout_version: '1.0'
 node:
   role: client
@@ -32,8 +32,8 @@ ai:
   framework: pytorch
   runtime: native
   family: autoencoder
-  architecture: convolutional_autoencoder
-  variant: convolutional_autoencoder_2layer
+  architecture: dense_autoencoder
+  variant: dense_autoencoder_5layer
   application: anomaly_detection
   dataset: fashion_mnist
   model_artifact: null
@@ -51,6 +51,15 @@ data:
   auto_download: true
   shuffle: true
   max_samples: null
+  partition:
+    type: iid
+    alpha: 0.5
+    seed: null
+    client_count: 1
+    client_index: 0
+    client_id: null
+    disjoint: true
+    source: server
   local_paths:
     imagenet: null
     coco2017: null
@@ -68,7 +77,8 @@ execution:
   steps_per_epoch: 20
   learning_rate: 0.001
 federated:
-  rounds: 10
+  mode: full_scale
+  rounds: 100
   local_epochs: 1
   steps_per_epoch: 10
   expected_clients: 2
@@ -80,6 +90,21 @@ federated:
 device:
   label: dell_laptop
   operating_system: windows_11
+anomaly_detection:
+  calibration_fraction: 0.1
+  calibration_seed_offset: 73001
+  data_role: train
+  anomaly_labels:
+  - 9
+  threshold_percentile: 95.0
+  calibration_batches: 10
+  evaluation_batches: 10
+  evaluation_batch_size: 32
+checkpoint:
+  enabled: true
+  interval_rounds: 10
+  retain_archives: 3
+  minimum_free_disk_gb: 5.0
 performance_logging:
   enabled: true
   client_round_probe: true

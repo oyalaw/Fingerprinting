@@ -184,3 +184,27 @@ def test_new_pytorch_autoencoder_and_mlp_execute():
     workload = PyTorchWorkload(mlp)
     y = np.asarray([2], dtype=np.int64)
     assert np.isfinite(workload.train_batch(x, y)["loss"])
+
+
+def test_beta_vae_executes_anomaly_detection_batch():
+    pytest.importorskip("torch")
+    from ai_fingerprint.workloads.pytorch_backend import PyTorchWorkload
+
+    config = _base_training_config()
+    config["ai"].update(
+        {
+            "family": "autoencoder",
+            "architecture": "variational_autoencoder",
+            "variant": "beta_vae",
+            "application": "anomaly_detection",
+            "dataset": "synthetic_image",
+            "input_size": 8,
+        }
+    )
+    workload = PyTorchWorkload(config)
+    x = np.random.default_rng(7).random((2, 3, 8, 8), dtype=np.float32)
+    metrics = workload.train_batch(x, x)
+    assert np.isfinite(metrics["loss"])
+    assert np.isfinite(metrics["reconstruction_loss"])
+    assert np.isfinite(metrics["kl_loss"])
+    assert metrics["vae_beta"] == pytest.approx(4.0)

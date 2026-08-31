@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.7 — VAE application taxonomy correction
+
+- Corrected `vae_fc`, `vae_conv`, and `beta_vae` so all native variational autoencoder variants expose both `reconstruction` and `anomaly_detection`.
+- Reused the existing disjoint normal calibration and reconstruction-error anomaly evaluation protocol; no test-set threshold leakage was introduced.
+- Kept `image_generation` out of the native VAE application menu because the current workload runner does not yet implement a dedicated generation-quality evaluation protocol.
+- Added registry and executable PyTorch Beta-VAE anomaly-detection regression tests.
+
 ## 0.9.6 — Full scale experiment hardening
 
 - Added explicit `full_scale` and `smoke_test` federated modes. Full scale requires at least 100 global rounds; smoke tests allow 1 through 99.

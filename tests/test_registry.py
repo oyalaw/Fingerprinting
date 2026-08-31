@@ -88,3 +88,17 @@ def test_legacy_model_label_upgrade():
         "lstm",
         "lstm_2layer",
     )
+
+
+def test_variational_autoencoders_support_reconstruction_and_anomaly_detection():
+    for variant in ("vae_fc", "vae_conv", "beta_vae"):
+        assert registry.applications_for("variational_autoencoder", variant) == [
+            "anomaly_detection",
+            "reconstruction",
+        ]
+        for application in ("reconstruction", "anomaly_detection"):
+            datasets = registry.datasets_for(
+                "variational_autoencoder", application, variant
+            )
+            assert "fashion_mnist" in datasets
+            assert "cifar10" in datasets
