@@ -174,12 +174,13 @@ class SyntheticSource(BaseSource):
                 size=(seq, dim)
             ).astype(np.float32)
 
-        if application == "text_classification":
+        if application in {"text_classification", "masked_language_modeling"}:
             length = int(ai["max_text_length"])
             vocab = int(ai["vocab_size"])
+            low = 2 if application == "masked_language_modeling" else 0
             return self.rng.integers(
-                low=0,
-                high=vocab,
+                low=low,
+                high=max(vocab, low + 1),
                 size=(length,),
                 dtype=np.int64,
             )
@@ -1208,12 +1209,52 @@ class DatasetManager:
         self,
     ) -> tuple[np.ndarray, np.ndarray]:
         batch_size = int(self.config["execution"]["batch_size"])
+        application = str(self.config.get("ai", {}).get("application", ""))
+
+        if application == "masked_language_modeling":
+            # MLM targets are derived from the observed text itself, so no
+            # dataset-specific class label is required. Token 0 is padding,
+            # token 1 is reserved as the mask token, and unmasked targets use
+            # -100 so both PyTorch and TensorFlow can ignore them in loss and
+            # token-level accuracy calculations.
+            samples = [
+                np.asarray(self.source.get(self._next_index()), dtype=np.int64)
+                for _ in range(batch_size)
+            ]
+            mask_cfg = self.config.get("masked_language_modeling", {}) or {}
+            probability = float(mask_cfg.get("mask_probability", 0.15))
+            probability = min(max(probability, 0.0), 1.0)
+            masked_samples: list[np.ndarray] = []
+            targets: list[np.ndarray] = []
+            for sample in samples:
+                original = np.asarray(sample, dtype=np.int64).copy()
+                eligible = np.flatnonzero(original > 1)
+                if eligible.size == 0:
+                    raise DatasetError(
+                        "Masked-language-modeling sample contains no non-padding tokens"
+                    )
+                selected = eligible[self.rng.random(eligible.size) < probability]
+                if selected.size == 0:
+                    selected = np.asarray([self.rng.choice(eligible)], dtype=np.int64)
+                masked = original.copy()
+                target = np.full(original.shape, -100, dtype=np.int64)
+                target[selected] = original[selected]
+                masked[selected] = 1
+                masked_samples.append(masked)
+                targets.append(target)
+            samples = masked_samples
+            try:
+                return np.stack(samples, axis=0), np.stack(targets, axis=0)
+            except ValueError as exc:
+                raise DatasetError(
+                    "Cannot batch masked-language-modeling token sequences"
+                ) from exc
+
         pairs = [
             self.source.get_with_target(self._next_index())
             for _ in range(batch_size)
         ]
         samples = [pair[0] for pair in pairs]
-        application = str(self.config.get("ai", {}).get("application", ""))
         if application in {
             "reconstruction",
             "anomaly_detection",

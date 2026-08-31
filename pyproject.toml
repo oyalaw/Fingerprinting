@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-fingerprint-experiment"
-version = "0.9.7"
+version = "0.9.8"
 description = "AI workload fingerprinting with hierarchical experiment automation, multiscale proxy inference, federated model-contract validation, and per-round learning-performance logging"
 requires-python = ">=3.10"
 dependencies = [

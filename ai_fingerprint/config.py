@@ -120,6 +120,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "label": "custom",
         "operating_system": "unknown",
     },
+    "masked_language_modeling": {
+        # Deterministic experiment RNG chooses masked token positions. Token 0
+        # is padding, token 1 is reserved as [MASK], and -100 marks targets
+        # excluded from the token-level loss.
+        "mask_probability": 0.15,
+    },
     "anomaly_detection": {
         # Reserve a deterministic normal-only subset from the training split
         # exclusively for threshold calibration. It never participates in
@@ -413,6 +419,17 @@ def validate_config(config: Dict[str, Any]) -> None:
             raise ConfigError(
                 f"Training is not implemented for application "
                 f"{application!r}"
+            )
+
+    if application == "masked_language_modeling":
+        probability = float(
+            (config.get("masked_language_modeling", {}) or {}).get(
+                "mask_probability", 0.15
+            )
+        )
+        if not 0.0 < probability <= 1.0:
+            raise ConfigError(
+                "masked_language_modeling.mask_probability must be in (0, 1]"
             )
 
     kind = config["transport"]["kind"]

@@ -78,6 +78,39 @@ class Workload(ABC):
             return metrics
 
         logits = output.astype(np.float64, copy=False)
+        if application == "masked_language_modeling":
+            if logits.ndim != 3:
+                raise ValueError(
+                    "Masked-language-modeling evaluation expects "
+                    f"[batch, tokens, vocab] logits, received shape {logits.shape}"
+                )
+            truth_all = np.asarray(targets, dtype=np.int64)
+            if truth_all.shape != logits.shape[:2]:
+                raise ValueError(
+                    f"MLM target shape {truth_all.shape} does not match "
+                    f"logit token shape {logits.shape[:2]}"
+                )
+            mask = truth_all != -100
+            if not np.any(mask):
+                raise ValueError("MLM evaluation batch contains no masked targets")
+            selected_logits = logits[mask]
+            truth = truth_all[mask]
+            shifted = selected_logits - np.max(
+                selected_logits, axis=1, keepdims=True
+            )
+            log_sum_exp = np.log(np.sum(np.exp(shifted), axis=1))
+            correct = shifted[np.arange(truth.size), truth]
+            loss = float(np.mean(log_sum_exp - correct))
+            predictions = np.argmax(selected_logits, axis=1).astype(np.int64)
+            return {
+                "loss": loss,
+                "accuracy": float(np.mean(predictions == truth)),
+                "_targets": truth,
+                "_predictions": predictions,
+                "samples": samples,
+                "evaluated_tokens": int(truth.size),
+            }
+
         if logits.ndim != 2:
             raise ValueError(
                 f"Classification evaluation expects [batch, classes] logits, "

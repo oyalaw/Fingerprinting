@@ -78,6 +78,10 @@ def _metric_rows(trained):
             ("variant", parent, stage)
             for parent, stage in stages.get("variant_by_parent", {}).items()
         )
+        entries.extend(
+            ("application", parent, stage)
+            for parent, stage in stages.get("application_by_parent", {}).items()
+        )
         for level, parent, stage in entries:
             evaluation = stage.get("evaluation", {}) or {}
             rows.append({

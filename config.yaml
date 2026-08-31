@@ -1,13 +1,13 @@
 experiment:
   experiment_id: exp1
-  output_dir: experiments\results\autoencoder\dense_autoencoder\dense_autoencoder_5layer\anomaly_detection\fashion_mnist\pytorch\exp1\client_3
+  output_dir: experiments\results\transformer\bert\bert_base\text_classification\imdb\pytorch\exp1\client_3
   results_root: experiments\results
   existing_output_policy: error
   run_id: null
   experiment_number: 1
-  branch_dir: experiments\results\autoencoder\dense_autoencoder\dense_autoencoder_5layer\anomaly_detection\fashion_mnist\pytorch
-  run_dir: experiments\results\autoencoder\dense_autoencoder\dense_autoencoder_5layer\anomaly_detection\fashion_mnist\pytorch\exp1
-  storage_locator: autoencoder\dense_autoencoder\dense_autoencoder_5layer\anomaly_detection\fashion_mnist\pytorch\exp1
+  branch_dir: experiments\results\transformer\bert\bert_base\text_classification\imdb\pytorch
+  run_dir: experiments\results\transformer\bert\bert_base\text_classification\imdb\pytorch\exp1
+  storage_locator: transformer\bert\bert_base\text_classification\imdb\pytorch\exp1
   layout_version: '1.0'
 node:
   role: client
@@ -31,13 +31,13 @@ transport:
 ai:
   framework: pytorch
   runtime: native
-  family: autoencoder
-  architecture: dense_autoencoder
-  variant: dense_autoencoder_5layer
-  application: anomaly_detection
-  dataset: fashion_mnist
+  family: transformer
+  architecture: bert
+  variant: bert_base
+  application: text_classification
+  dataset: imdb
   model_artifact: null
-  num_classes: 10
+  num_classes: 2
   input_size: 224
   sequence_length: 128
   input_dim: 9

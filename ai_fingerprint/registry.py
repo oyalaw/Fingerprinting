@@ -42,6 +42,9 @@ TEXT_CLASSIFICATION_DATASETS = [
     "tweet_eval_sentiment",
 ]
 
+MASKED_LANGUAGE_MODELING_DATASETS = list(TEXT_CLASSIFICATION_DATASETS)
+
+
 ACTIVITY_DATASETS = [
     "synthetic_sequence",
     "uci_har",
@@ -250,49 +253,76 @@ VARIANTS: Dict[str, VariantSpec] = {
     # variant fingerprinting are not deterministic single-child decisions.
     "tiny_transformer_2layer": _spec(
         "transformer", "tiny_transformer",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch", "tensorflow"},
     ),
     "tiny_transformer_4layer": _spec(
         "transformer", "tiny_transformer",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch", "tensorflow"},
     ),
     "tiny_transformer_6layer": _spec(
         "transformer", "tiny_transformer",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch", "tensorflow"},
     ),
     # Hugging Face-backed PyTorch BERT/DistilBERT models are instantiated
     # from config with random weights, so no model download is required.
     "bert_tiny": _spec(
         "transformer", "bert",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch"},
     ),
     "bert_mini": _spec(
         "transformer", "bert",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch"},
     ),
     "bert_small": _spec(
         "transformer", "bert",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch"},
     ),
     "bert_base": _spec(
         "transformer", "bert",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch"},
     ),
     "bert_large": _spec(
         "transformer", "bert",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch"},
     ),
     "distilbert_base": _spec(
         "transformer", "distilbert",
-        {"text_classification": TEXT_CLASSIFICATION_DATASETS},
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
         {"pytorch"},
     ),
     # torchvision Vision Transformers provide a same-modality control against
@@ -654,6 +684,7 @@ TRAINABLE_APPLICATIONS = {
     "image_classification",
     "activity_recognition",
     "text_classification",
+    "masked_language_modeling",
     "reconstruction",
     "anomaly_detection",
 }

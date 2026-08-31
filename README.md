@@ -1,5 +1,14 @@
 # AI Fingerprinting Experiment Codebase
 
+## v0.9.8: Transformer application fingerprinting
+
+Hierarchical fingerprinting now predicts `family -> architecture -> variant -> application`.
+Tiny Transformer, BERT, and DistilBERT expose both `text_classification` and
+`masked_language_modeling` when supported by the selected native framework. MLM uses
+deterministic experiment-seeded masking (default 15%) and evaluates loss/accuracy only
+on masked tokens. Question answering and token classification remain intentionally
+unavailable until structured-target dataset/evaluation support is implemented.
+
 ## v0.9.5: full-scale anomaly-detection performance logging
 
 Federated server runs now default to **100 global rounds** and the interactive server
@@ -126,7 +135,7 @@ When trained models are present under `fingerprinting_models/`, each completed
 window produces hierarchical probabilities:
 
 ```text
-Family -> Architecture -> Variant
+Family -> Architecture -> Variant -> Application
 ```
 
 A decision is considered stable only after the configured number of
@@ -1212,7 +1221,7 @@ scripts/
 Version 0.6 retains the three level model identity taxonomy:
 
 ```text
-family -> architecture -> variant
+family -> architecture -> variant -> application
 ```
 
 Examples:

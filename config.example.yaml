@@ -83,6 +83,9 @@ federated:
   client_id: client_1
   aggregation: fedavg
 
+masked_language_modeling:
+  mask_probability: 0.15
+
 anomaly_detection:
   calibration_fraction: 0.10
   calibration_seed_offset: 73001

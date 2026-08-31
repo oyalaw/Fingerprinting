@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.8 — Transformer application fingerprinting
+
+- Extended hierarchical fingerprinting from `family -> architecture -> variant` to `family -> architecture -> variant -> application`.
+- Added native `masked_language_modeling` for Tiny Transformer on PyTorch and TensorFlow and for BERT/DistilBERT on PyTorch.
+- Added deterministic 15% token masking with padding/mask-token separation and masked-token-only loss/accuracy.
+- Added application-stage Fisher feature selection, experiment-grouped evaluation, prediction, live stability tracking, and hierarchical metrics output.
+- Kept question answering and token classification out of the native menu until structured-target dataset/evaluation support exists.
+- Preserved compatibility with legacy prepared fingerprinting datasets that lack application labels.
+
+Validation: 141 automated tests pass; Python compilation passes. PyTorch MLM execution is covered directly; optional TensorFlow and Hugging Face runtime paths require their respective packages on the experiment host.
+
 ## 0.9.7 — VAE application taxonomy correction
 
 - Corrected `vae_fc`, `vae_conv`, and `beta_vae` so all native variational autoencoder variants expose both `reconstruction` and `anomaly_detection`.

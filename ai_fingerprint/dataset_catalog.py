@@ -291,7 +291,7 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "synthetic_text": DatasetSpec(
         name="synthetic_text",
-        applications=("text_classification",),
+        applications=("text_classification", "masked_language_modeling"),
         modality="text",
         source="generated",
         acquisition="synthetic",
@@ -302,7 +302,7 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "imdb": DatasetSpec(
         name="imdb",
-        applications=("text_classification",),
+        applications=("text_classification", "masked_language_modeling"),
         modality="text",
         source="huggingface",
         acquisition="automatic",
@@ -313,7 +313,7 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "sst2": DatasetSpec(
         name="sst2",
-        applications=("text_classification",),
+        applications=("text_classification", "masked_language_modeling"),
         modality="text",
         source="huggingface",
         acquisition="automatic",
@@ -324,7 +324,7 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "ag_news": DatasetSpec(
         name="ag_news",
-        applications=("text_classification",),
+        applications=("text_classification", "masked_language_modeling"),
         modality="text",
         source="huggingface",
         acquisition="automatic",
@@ -335,7 +335,7 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "yelp_polarity": DatasetSpec(
         name="yelp_polarity",
-        applications=("text_classification",),
+        applications=("text_classification", "masked_language_modeling"),
         modality="text",
         source="huggingface",
         acquisition="automatic",
@@ -346,7 +346,7 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "dbpedia_14": DatasetSpec(
         name="dbpedia_14",
-        applications=("text_classification",),
+        applications=("text_classification", "masked_language_modeling"),
         modality="text",
         source="huggingface",
         acquisition="automatic",
@@ -357,7 +357,7 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "amazon_polarity": DatasetSpec(
         name="amazon_polarity",
-        applications=("text_classification",),
+        applications=("text_classification", "masked_language_modeling"),
         modality="text",
         source="huggingface",
         acquisition="automatic",
@@ -368,7 +368,7 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "tweet_eval_sentiment": DatasetSpec(
         name="tweet_eval_sentiment",
-        applications=("text_classification",),
+        applications=("text_classification", "masked_language_modeling"),
         modality="text",
         source="huggingface",
         acquisition="automatic",

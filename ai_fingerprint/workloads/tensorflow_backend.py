@@ -117,7 +117,10 @@ class TensorFlowWorkload(Workload):
                 raise ValueError(
                     f"Unsupported native tiny transformer variant: {variant!r}"
                 )
-            return self._build_tiny_transformer(layers)
+            return self._build_tiny_transformer(
+                layers,
+                token_level=self.application == "masked_language_modeling",
+            )
 
         if arch == "dense_autoencoder":
             depth_map = {
@@ -227,7 +230,11 @@ class TensorFlowWorkload(Workload):
         outputs = tf.keras.layers.Dense(self.num_classes)(x)
         return tf.keras.Model(inputs, outputs)
 
-    def _build_tiny_transformer(self, layer_count: int):
+    def _build_tiny_transformer(
+        self,
+        layer_count: int,
+        token_level: bool = False,
+    ):
         tf = self.tf
         length = int(self.config["ai"]["max_text_length"])
         vocab = int(self.config["ai"]["vocab_size"])
@@ -249,8 +256,11 @@ class TensorFlowWorkload(Workload):
             ff = tf.keras.layers.Dense(embed)(ff)
             x = tf.keras.layers.LayerNormalization()(x + ff)
 
-        x = tf.keras.layers.GlobalAveragePooling1D()(x)
-        outputs = tf.keras.layers.Dense(self.num_classes)(x)
+        if token_level:
+            outputs = tf.keras.layers.Dense(vocab)(x)
+        else:
+            x = tf.keras.layers.GlobalAveragePooling1D()(x)
+            outputs = tf.keras.layers.Dense(self.num_classes)(x)
         return tf.keras.Model(inputs, outputs)
 
     def _build_dense_autoencoder(self, input_size: int, depth: int):
@@ -405,7 +415,7 @@ class TensorFlowWorkload(Workload):
         }:
             array = np.transpose(array, (0, 2, 3, 1))
             tensor = tf.convert_to_tensor(array, dtype=tf.float32)
-        elif self.application == "text_classification":
+        elif self.application in {"text_classification", "masked_language_modeling"}:
             tensor = tf.convert_to_tensor(array, dtype=tf.int32)
         else:
             tensor = tf.convert_to_tensor(array, dtype=tf.float32)
@@ -430,7 +440,7 @@ class TensorFlowWorkload(Workload):
         }:
             array = np.transpose(inputs, (0, 2, 3, 1))
             return tf.convert_to_tensor(array, dtype=tf.float32)
-        if self.application == "text_classification":
+        if self.application in {"text_classification", "masked_language_modeling"}:
             return tf.convert_to_tensor(inputs, dtype=tf.int32)
         return tf.convert_to_tensor(inputs, dtype=tf.float32)
 
@@ -444,7 +454,38 @@ class TensorFlowWorkload(Workload):
 
         with tf.GradientTape() as tape:
             output = self.model(x, training=True)
-            if self.application in {
+            if self.application == "masked_language_modeling":
+                y = tf.convert_to_tensor(targets, dtype=tf.int64)
+                if len(output.shape) != 3 or tuple(y.shape) != tuple(output.shape[:2]):
+                    raise ValueError(
+                        f"MLM output/target shape mismatch: {tuple(output.shape)} "
+                        f"vs {tuple(y.shape)}"
+                    )
+                flat_output = tf.reshape(output, (-1, tf.shape(output)[-1]))
+                flat_y = tf.reshape(y, (-1,))
+                mask = tf.not_equal(flat_y, -100)
+                selected_output = tf.boolean_mask(flat_output, mask)
+                evaluated_targets = tf.boolean_mask(flat_y, mask)
+                if int(tf.size(evaluated_targets).numpy()) == 0:
+                    raise ValueError("MLM training batch contains no masked targets")
+                losses = tf.keras.losses.sparse_categorical_crossentropy(
+                    evaluated_targets,
+                    selected_output,
+                    from_logits=True,
+                )
+                loss = tf.reduce_mean(losses)
+                predictions = tf.argmax(
+                    selected_output, axis=1, output_type=tf.int64
+                )
+                accuracy = float(
+                    tf.reduce_mean(
+                        tf.cast(
+                            tf.equal(predictions, evaluated_targets),
+                            tf.float32,
+                        )
+                    ).numpy()
+                )
+            elif self.application in {
                 "reconstruction",
                 "anomaly_detection",
                 "image_denoising",
@@ -497,10 +538,21 @@ class TensorFlowWorkload(Workload):
         }
         if accuracy is not None:
             metrics["accuracy"] = accuracy
-            metrics["_targets"] = np.asarray(y.numpy(), dtype=np.int64)
+            metric_targets = (
+                evaluated_targets
+                if self.application == "masked_language_modeling"
+                else y
+            )
+            metrics["_targets"] = np.asarray(
+                metric_targets.numpy(), dtype=np.int64
+            )
             metrics["_predictions"] = np.asarray(
                 predictions.numpy(), dtype=np.int64
             )
+            if self.application == "masked_language_modeling":
+                metrics["evaluated_tokens"] = int(
+                    tf.size(metric_targets).numpy()
+                )
         else:
             metrics["reconstruction_loss"] = float(reconstruction_loss.numpy())
             metrics["mse"] = metrics["reconstruction_loss"]

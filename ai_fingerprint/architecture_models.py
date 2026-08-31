@@ -11,9 +11,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 
-MODEL_SCHEMA_VERSION = "1.1"
+MODEL_SCHEMA_VERSION = "1.2"
 FISHER_TOP_K = 10
-LABEL_LEVELS = ("family", "architecture", "variant")
+LABEL_LEVELS = ("family", "architecture", "variant", "application")
 REALTIME_MIN_PACKETS = 20
 
 # Metadata may accompany features for grouping/alignment but never enters X.
@@ -191,6 +191,10 @@ def _joined_rows(
                     y.get("architecture", "")
                 ).strip(),
                 "_variant": str(y.get("variant", "")).strip(),
+                "_application": (
+                    str(y.get("application", "")).strip()
+                    or "__unknown_application__"
+                ),
             }
         )
         if not all(row[f"_{level}"] for level in LABEL_LEVELS):
@@ -532,6 +536,29 @@ def train_hierarchy_bundle(
         )
     stages["variant_by_parent"] = variant_by_parent
 
+    application_by_parent: Dict[str, Any] = {}
+    application_parents = sorted(
+        {
+            (row["_family"], row["_architecture"], row["_variant"])
+            for row in joined
+        }
+    )
+    for family, architecture, variant in application_parents:
+        subset = [
+            row for row in joined
+            if row["_family"] == family
+            and row["_architecture"] == architecture
+            and row["_variant"] == variant
+        ]
+        key = f"{family}::{architecture}::{variant}"
+        application_by_parent[key] = _train_stage(
+            subset,
+            feature_columns,
+            "_application",
+            fisher_top_k=fisher_top_k,
+        )
+    stages["application_by_parent"] = application_by_parent
+
     bundle = {
         "schema_version": MODEL_SCHEMA_VERSION,
         "mode": mode,
@@ -613,6 +640,12 @@ def bundle_metadata(bundle: Mapping[str, Any]) -> Dict[str, Any]:
                 key: _stage_metadata(stage)
                 for key, stage in stages[
                     "variant_by_parent"
+                ].items()
+            },
+            "application_by_parent": {
+                key: _stage_metadata(stage)
+                for key, stage in stages[
+                    "application_by_parent"
                 ].items()
             },
         },
@@ -709,10 +742,25 @@ def predict_hierarchy(
         if stage is not None:
             variant = _predict_stage(stage, feature_row)
 
+    application = {
+        "label": None,
+        "confidence": 0.0,
+        "probabilities": {},
+        "kind": "unavailable",
+    }
+    variant_label = variant.get("label")
+    if family_label and architecture_label and variant_label:
+        stage = stages.get("application_by_parent", {}).get(
+            f"{family_label}::{architecture_label}::{variant_label}"
+        )
+        if stage is not None:
+            application = _predict_stage(stage, feature_row)
+
     return {
         "family": family,
         "architecture": architecture,
         "variant": variant,
+        "application": application,
     }
 
 

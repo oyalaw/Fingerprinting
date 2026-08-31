@@ -2,13 +2,13 @@ AI Fingerprinting Model Hierarchy Schema
 Version 1.2
 
 Inference hierarchy:
-family -> architecture -> variant
+family -> architecture -> variant -> application
 
 Examples:
-cnn -> resnet -> resnet50
-rnn -> lstm -> bilstm_2layer
-transformer -> bert -> bert_base
-autoencoder -> variational_autoencoder -> beta_vae
+cnn -> resnet -> resnet50 -> image_classification
+rnn -> lstm -> bilstm_2layer -> activity_recognition / text_classification
+transformer -> bert -> bert_base -> text_classification / masked_language_modeling
+autoencoder -> variational_autoencoder -> beta_vae -> reconstruction / anomaly_detection
 gnn -> gat -> gat_8head
 diffusion -> latent_diffusion -> stable_diffusion_v1_5
 gan -> stylegan -> stylegan2_ada
@@ -16,8 +16,9 @@ mlp -> feedforward_mlp -> mlp_4layer
 state_space -> mamba -> mamba_small
 
 Important:
-precision, batch size, input size, framework, runtime, device, and application
-are separate experimental attributes. They are not model variants.
+precision, batch size, input size, framework, runtime, device, and dataset
+are separate experimental attributes. Application is now a fingerprint target,
+but it remains separate from the model variant.
 
 Runtime behavior:
 native runtime lists only variants with a native implementation for the
@@ -38,9 +39,9 @@ device
 v0.8.7 native-training coverage highlights:
 cnn -> resnet/mobilenet/efficientnet -> multiple variants
 rnn -> lstm/gru -> multiple variants
-transformer -> tiny_transformer -> 2/4/6-layer
-transformer -> bert -> tiny/mini/small/base/large (PyTorch + transformers)
-transformer -> distilbert -> base (PyTorch + transformers)
+transformer -> tiny_transformer -> 2/4/6-layer; text_classification + masked_language_modeling
+transformer -> bert -> tiny/mini/small/base/large (PyTorch + transformers); text_classification + masked_language_modeling
+transformer -> distilbert -> base (PyTorch + transformers); text_classification + masked_language_modeling
 transformer -> vit -> B/16, B/32, L/16 (PyTorch torchvision)
 autoencoder -> dense_autoencoder -> 2/3/5-layer
 autoencoder -> convolutional_autoencoder -> 2/4/6-layer

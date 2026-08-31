@@ -689,7 +689,7 @@ class LiveArchitectureMonitor:
         feature_mode: str,
         size: float,
     ) -> None:
-        for level in ("family", "architecture", "variant"):
+        for level in ("family", "architecture", "variant", "application"):
             self._stability[
                 (trace_id, feature_mode, size, level)
             ].clear()
@@ -704,7 +704,7 @@ class LiveArchitectureMonitor:
         prediction: Mapping[str, Any],
     ) -> None:
         stable: Dict[str, Any] = {}
-        for level in ("family", "architecture", "variant"):
+        for level in ("family", "architecture", "variant", "application"):
             level_result = prediction[level]
             label = level_result.get("label")
             confidence = float(level_result.get("confidence", 0.0))

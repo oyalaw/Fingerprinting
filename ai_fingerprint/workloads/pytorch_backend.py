@@ -151,6 +151,7 @@ class PyTorchWorkload(Workload):
                 nhead=4,
                 layers=layers,
                 num_classes=self.num_classes,
+                token_level=self.application == "masked_language_modeling",
             )
 
         if arch == "bert":
@@ -237,7 +238,11 @@ class PyTorchWorkload(Workload):
 
     def _build_hf_bert(self):
         try:
-            from transformers import BertConfig, BertForSequenceClassification
+            from transformers import (
+                BertConfig,
+                BertForMaskedLM,
+                BertForSequenceClassification,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "BERT native execution requires the optional 'transformers' "
@@ -265,6 +270,8 @@ class PyTorchWorkload(Workload):
             max_position_embeddings=max(int(ai["max_text_length"]) + 2, 128),
             num_labels=self.num_classes,
         )
+        if self.application == "masked_language_modeling":
+            return BertForMaskedLM(config)
         return BertForSequenceClassification(config)
 
     def _build_hf_distilbert(self):
@@ -275,6 +282,7 @@ class PyTorchWorkload(Workload):
         try:
             from transformers import (
                 DistilBertConfig,
+                DistilBertForMaskedLM,
                 DistilBertForSequenceClassification,
             )
         except ImportError as exc:
@@ -293,6 +301,8 @@ class PyTorchWorkload(Workload):
             max_position_embeddings=max(int(ai["max_text_length"]) + 2, 128),
             num_labels=self.num_classes,
         )
+        if self.application == "masked_language_modeling":
+            return DistilBertForMaskedLM(config)
         return DistilBertForSequenceClassification(config)
 
     @staticmethod
@@ -305,7 +315,7 @@ class PyTorchWorkload(Workload):
 
     def infer(self, array: np.ndarray) -> np.ndarray:
         torch = self.torch
-        if self.application == "text_classification":
+        if self.application in {"text_classification", "masked_language_modeling"}:
             tensor = torch.as_tensor(array, dtype=torch.long, device=self.device)
         else:
             tensor = torch.as_tensor(
@@ -325,7 +335,7 @@ class PyTorchWorkload(Workload):
         torch = self.torch
         self.model.train()
 
-        if self.application == "text_classification":
+        if self.application in {"text_classification", "masked_language_modeling"}:
             x = torch.as_tensor(inputs, dtype=torch.long, device=self.device)
         else:
             x = torch.as_tensor(inputs, dtype=torch.float32, device=self.device)
@@ -333,7 +343,28 @@ class PyTorchWorkload(Workload):
         self.optimizer.zero_grad(set_to_none=True)
         output = self._logits(self.model(x))
 
-        if self.application in {
+        if self.application == "masked_language_modeling":
+            y = torch.as_tensor(targets, dtype=torch.long, device=self.device)
+            if output.ndim != 3 or y.shape != output.shape[:2]:
+                raise ValueError(
+                    f"MLM output/target shape mismatch: {tuple(output.shape)} "
+                    f"vs {tuple(y.shape)}"
+                )
+            loss = torch.nn.functional.cross_entropy(
+                output.reshape(-1, output.shape[-1]),
+                y.reshape(-1),
+                ignore_index=-100,
+            )
+            predictions_all = output.argmax(dim=-1)
+            mask = y != -100
+            if not bool(mask.any()):
+                raise ValueError("MLM training batch contains no masked targets")
+            predictions = predictions_all[mask]
+            evaluated_targets = y[mask]
+            accuracy = float(
+                (predictions == evaluated_targets).float().mean().item()
+            )
+        elif self.application in {
             "reconstruction",
             "anomaly_detection",
             "image_denoising",
@@ -370,10 +401,19 @@ class PyTorchWorkload(Workload):
         }
         if accuracy is not None:
             metrics["accuracy"] = accuracy
-            metrics["_targets"] = y.detach().cpu().numpy().astype(np.int64, copy=False)
+            metric_targets = (
+                evaluated_targets
+                if self.application == "masked_language_modeling"
+                else y
+            )
+            metrics["_targets"] = (
+                metric_targets.detach().cpu().numpy().astype(np.int64, copy=False)
+            )
             metrics["_predictions"] = (
                 predictions.detach().cpu().numpy().astype(np.int64, copy=False)
             )
+            if self.application == "masked_language_modeling":
+                metrics["evaluated_tokens"] = int(metric_targets.numel())
         else:
             metrics["reconstruction_loss"] = float(
                 reconstruction_loss.detach().cpu().item()
@@ -529,6 +569,7 @@ class _TorchTinyTransformer:
         nhead,
         layers,
         num_classes,
+        token_level=False,
     ):
         class Model(nn.Module):
             def __init__(self):
@@ -546,7 +587,8 @@ class _TorchTinyTransformer:
                     encoder_layer,
                     num_layers=layers,
                 )
-                self.fc = nn.Linear(embed_dim, num_classes)
+                output_dim = vocab_size if token_level else num_classes
+                self.fc = nn.Linear(embed_dim, output_dim)
 
             def forward(self, x):
                 positions = self.position(
@@ -554,6 +596,8 @@ class _TorchTinyTransformer:
                 ).unsqueeze(0)
                 x = self.embedding(x) + positions
                 x = self.encoder(x)
+                if token_level:
+                    return self.fc(x)
                 return self.fc(x.mean(dim=1))
 
         return Model()
