@@ -172,6 +172,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # where the binary exists but no usable NVIDIA GPU is present.
         "disable_unusable_nvidia_smi": True,
     },
+    "result_collection": {
+        # Copy-only central replication. Local experiment results remain the
+        # authoritative originals even after a verified upload.
+        "enabled": True,
+        "collector_host": "10.42.0.195",
+        "collector_port": 8090,
+        "timeout_sec": 10.0,
+        "retry_attempts": 3,
+        "retry_delay_sec": 1.0,
+        "shared_token": "",
+        "max_archive_mb": 1024,
+        "central_root": "collected_experiments",
+    },
 }
 
 
@@ -577,3 +590,20 @@ def validate_config(config: Dict[str, Any]) -> None:
 
     if int(monitor.get("gpu_index", 0)) < 0:
         raise ConfigError("resource_monitor.gpu_index must be nonnegative")
+
+    collection = config.get("result_collection", {}) or {}
+    if bool(collection.get("enabled", True)):
+        host = str(collection.get("collector_host", "")).strip()
+        if not host:
+            raise ConfigError("result_collection.collector_host is required when enabled")
+        port = int(collection.get("collector_port", 8090))
+        if not 1 <= port <= 65535:
+            raise ConfigError("result_collection.collector_port must be between 1 and 65535")
+        if float(collection.get("timeout_sec", 10.0)) <= 0:
+            raise ConfigError("result_collection.timeout_sec must be positive")
+        if int(collection.get("retry_attempts", 3)) <= 0:
+            raise ConfigError("result_collection.retry_attempts must be positive")
+        if float(collection.get("retry_delay_sec", 1.0)) < 0:
+            raise ConfigError("result_collection.retry_delay_sec must be nonnegative")
+        if float(collection.get("max_archive_mb", 1024)) <= 0:
+            raise ConfigError("result_collection.max_archive_mb must be positive")

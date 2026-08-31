@@ -1,0 +1,8 @@
+collector:
+  host: 0.0.0.0
+  port: 8090
+  root: collected_experiments
+  # Optional shared secret for the isolated research network. If set here,
+  # use the same value in result_collection.shared_token on all participants.
+  shared_token: ""
+  max_upload_mb: 1024

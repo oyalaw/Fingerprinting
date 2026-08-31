@@ -119,6 +119,19 @@ DEFAULT_PROXY_CONFIG: Dict[str, Any] = {
         "confidence_threshold": 0.90,
         "stable_windows": 3,
     },
+    "result_collection": {
+        # Proxy uploads only post-capture analysis artifacts; raw PCAP stays
+        # local so the central collector never needs multi-GB trace transfer.
+        "enabled": True,
+        "collector_host": "10.42.0.195",
+        "collector_port": 8090,
+        "timeout_sec": 10.0,
+        "retry_attempts": 3,
+        "retry_delay_sec": 1.0,
+        "shared_token": "",
+        "max_archive_mb": 1024,
+        "central_root": "collected_experiments",
+    },
 }
 
 
@@ -206,6 +219,25 @@ def validate_proxy_config(config: Dict[str, Any]) -> None:
     buffer_size = int(proxy.get("buffer_size", 0))
     if buffer_size < 1024:
         raise ProxyError("proxy.buffer_size must be at least 1024 bytes")
+
+    collection = config.get("result_collection")
+    if collection is not None and bool(collection.get("enabled", True)):
+        collector_host = str(collection.get("collector_host", "")).strip()
+        collector_port = int(collection.get("collector_port", 8090))
+        if not collector_host:
+            raise ProxyError(
+                "result_collection.collector_host is required when enabled"
+            )
+        if not 1 <= collector_port <= 65535:
+            raise ProxyError(
+                "result_collection.collector_port must be between 1 and 65535"
+            )
+        if float(collection.get("timeout_sec", 10.0)) <= 0:
+            raise ProxyError("result_collection.timeout_sec must be positive")
+        if int(collection.get("retry_attempts", 3)) <= 0:
+            raise ProxyError("result_collection.retry_attempts must be positive")
+        if float(collection.get("max_archive_mb", 1024)) <= 0:
+            raise ProxyError("result_collection.max_archive_mb must be positive")
 
     if bool(capture.get("enabled", True)):
         if not str(capture.get("interface", "")).strip():

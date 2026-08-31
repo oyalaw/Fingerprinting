@@ -55,6 +55,7 @@ from .proxy import (
     load_proxy_config,
     save_proxy_config,
 )
+from .result_collection import auto_upload_result_copy
 from .runner import run
 from .traffic import FeatureExtractionError, extract_capture_artifacts
 from .tls import TLSConfigurationError
@@ -744,6 +745,31 @@ def interactive_configure(
             + f" seed={partition.get('seed')} disjoint=true"
         )
 
+    if task == "training" and deployment == "federated":
+        collection = config.setdefault("result_collection", {})
+        collection["enabled"] = ask_yes_no(
+            "Replicate completed results to the central analysis collector",
+            True,
+        )
+        if collection["enabled"]:
+            default_collector_host = (
+                str(config["node"]["host"])
+                if role == "server"
+                else "10.42.0.195"
+            )
+            collection["collector_host"] = ask_text(
+                "Central result collector IP or hostname",
+                default_collector_host,
+            )
+            collection["collector_port"] = ask_int(
+                "Central result collector port",
+                8090,
+            )
+            print(
+                "Collection policy: local results remain authoritative; "
+                "the collector receives a verified copy only."
+            )
+
     monitor_enabled = ask_yes_no(
         "Enable client/server resource telemetry",
         True,
@@ -1049,6 +1075,25 @@ def interactive_proxy_configure() -> Dict[str, Any]:
                 3,
             )
 
+    collection = config.setdefault("result_collection", {})
+    collection["enabled"] = ask_yes_no(
+        "Replicate post-capture analysis results to the central collector",
+        True,
+    )
+    if collection["enabled"]:
+        collection["collector_host"] = ask_text(
+            "Central result collector IP or hostname",
+            str(config["proxy"]["upstream_host"]),
+        )
+        collection["collector_port"] = ask_int(
+            "Central result collector port",
+            8090,
+        )
+        print(
+            "Proxy collection excludes raw PCAP; extracted CSV/JSON artifacts "
+            "are copied only after capture has stopped."
+        )
+
     return config
 
 
@@ -1069,6 +1114,7 @@ def _run_proxy_with_status(config: Dict[str, Any]) -> Dict[str, Any]:
         raise
     else:
         write_role_status(config, "COMPLETE")
+        auto_upload_result_copy(config)
         return result
 
 

@@ -1,5 +1,19 @@
 # AI Fingerprinting Experiment Codebase
 
+## v0.9.9: centralized result collection and fingerprinting
+
+Completed client, server, and proxy outputs can now be replicated automatically to a
+central analysis host while every machine retains its authoritative local result. The
+collector verifies archive and per-file SHA256 checksums, excludes raw PCAP/checkpoints/
+model binaries, supports idempotent retry, and keeps collection status separate from
+experiment validity. The proxy uploads only post-capture analysis CSV/JSON artifacts.
+
+Run `python result_collector.py` once on the analysis host, then use
+`python run_central_fingerprinting.py` to validate complete run bundles, exclude partial
+runs, prepare proxy-only X / ground-truth Y data, and train the hierarchical
+`family -> architecture -> variant -> application` models. See
+`CENTRAL_RESULT_COLLECTION.md`.
+
 ## v0.9.8: Transformer application fingerprinting
 
 Hierarchical fingerprinting now predicts `family -> architecture -> variant -> application`.

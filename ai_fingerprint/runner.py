@@ -6,6 +6,7 @@ from .client import ExperimentClient
 from .experiment_layout import materialize_role_metadata, write_role_status
 from .experiment_output import enforce_experiment_output_policy
 from .server import ExperimentServer
+from .result_collection import auto_upload_result_copy
 
 
 def run(config: Dict[str, Any]) -> None:
@@ -35,3 +36,4 @@ def run(config: Dict[str, Any]) -> None:
         raise
     else:
         write_role_status(config, "COMPLETE")
+        auto_upload_result_copy(config)

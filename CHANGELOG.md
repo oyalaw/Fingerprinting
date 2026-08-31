@@ -1,3 +1,15 @@
+# v0.9.9
+
+- Added copy-only centralized experiment result replication over a pure-Python HTTP collector.
+- Local participant outputs remain authoritative and are never moved or deleted.
+- Added SHA256 verification for the upload archive and every collected analysis file.
+- Added idempotent retry using a deterministic content digest.
+- Excluded raw PCAP, checkpoints, TLS material, model binaries, and collection receipts from transfer.
+- Added `collection_status.json` and `collection_receipt.json`; collection failure becomes `PENDING` without changing experiment completion.
+- Added `result_collector.py`, `collect_pending_results.py`, and `run_central_fingerprinting.py`.
+- Central fingerprinting accepts only VALID bundles containing the server, proxy features, the expected number of completed clients, and client ground truth.
+- Added regression coverage for local retention, PCAP exclusion, unreachable collectors, retries, and run completeness.
+
 # Changelog
 
 ## 0.9.8 — Transformer application fingerprinting

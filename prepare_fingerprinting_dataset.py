@@ -149,7 +149,7 @@ def _discover_manifest_client_map(root: Path, registrations):
     return resolved, diagnostics
 
 
-def discover_inputs(root: Path):
+def discover_inputs(root: Path, allowed_experiment_ids=None):
     candidates = sorted(
         path
         for path in root.rglob("*_features.csv")
@@ -159,10 +159,17 @@ def discover_inputs(root: Path):
         )
     )
 
+    allowed = (
+        {str(value) for value in allowed_experiment_ids}
+        if allowed_experiment_ids is not None
+        else None
+    )
     grouped = {}
     for path in candidates:
         experiment_id, has_client = _feature_file_identity(path)
         if not experiment_id:
+            continue
+        if allowed is not None and experiment_id not in allowed:
             continue
         grouped.setdefault(experiment_id, []).append(
             (path, has_client)
