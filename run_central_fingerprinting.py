@@ -11,6 +11,7 @@ from ai_fingerprint.fingerprinting_dataset import (
 )
 from ai_fingerprint.result_collection import validate_collected_root
 from prepare_fingerprinting_dataset import discover_inputs
+from canonicalize_central_proxy import canonicalize_collected_proxy
 
 
 def main() -> None:
@@ -68,6 +69,50 @@ def main() -> None:
     print(f"  resolved client mappings: {len(client_map)}")
 
     output_dir = project_root / "fingerprinting_dataset"
+
+    print("\nCanonicalizing proxy traces...")
+    canonical = canonicalize_collected_proxy(
+        collected_root=collected_root,
+        valid_run_ids=valid_run_ids,
+        output_dir=(
+            output_dir
+            / "canonical_proxy_features"
+        ),
+    )
+
+    proxy_features = [
+        Path(path)
+        for path in canonical["feature_files"]
+    ]
+
+    # Canonical files use actual federated client IDs as
+    # grouping metadata. No alias mapping is needed afterward.
+    client_map = {}
+
+    # Rebuild ground truth from canonical VALID runs after reconciliation.
+    # This is necessary when a historical proxy source used a different
+    # local run ID from the server/client coordinated run ID.
+    ground_truth = sorted(
+        path
+        for run_id in valid_run_ids
+        for path in (
+            collected_root / run_id
+        ).rglob("*_ground_truth.jsonl")
+    )
+
+    print(
+        "  canonical feature files:",
+        canonical["feature_file_count"],
+    )
+    print(
+        "  canonical overall samples:",
+        canonical["overall_sample_count"],
+    )
+    print(
+        "  canonicalization audit:",
+        canonical["audit_json"],
+    )
+
     try:
         result = build_fingerprinting_dataset(
             proxy_feature_csvs=proxy_features,
@@ -96,6 +141,7 @@ def main() -> None:
             for (run_id, capture_id), client_id in sorted(client_map.items())
         ],
         "dataset": result,
+        "canonicalization": canonical,
         "predictor_policy": (
             "Only proxy-observable network features enter X. Client/server "
             "labels, client IDs, system telemetry, OS/device metadata, IPs, "

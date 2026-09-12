@@ -7,6 +7,7 @@ import json
 from ai_fingerprint.fingerprinting_dataset import (
     FingerprintingDataError,
     build_fingerprinting_dataset,
+    canonical_experiment_id_for_feature_path,
 )
 
 
@@ -17,9 +18,13 @@ def _feature_file_identity(path: Path):
             first = next(reader, None)
             if first is None:
                 return None, False
-            experiment_id = str(
+            embedded_experiment_id = str(
                 first.get("experiment_id", "")
             ).strip()
+            experiment_id = canonical_experiment_id_for_feature_path(
+                path,
+                embedded_experiment_id,
+            )
             has_client = "client_capture_id" in (reader.fieldnames or [])
             return experiment_id or None, has_client
     except Exception:
@@ -149,6 +154,247 @@ def _discover_manifest_client_map(root: Path, registrations):
     return resolved, diagnostics
 
 
+
+def _prune_tiny_retry_client_map(
+    root: Path,
+    client_map,
+    diagnostics,
+):
+    """
+    Remove only negligible retry/stale TCP aliases after client identity
+    resolution.
+
+    If multiple capture aliases resolve to the same federated client in one
+    run, an alias is treated as a retry fragment only when BOTH hold:
+
+      packet_count < 100
+      packet_count < 0.0001 * largest alias for that run/client
+
+    This preserves substantive reconnects while excluding tiny connection
+    fragments from classifier input.
+    """
+    packet_counts = {}
+
+    for manifest_path in sorted(root.rglob("*_manifest.json")):
+        # Use only chunk manifests so packet counts are not double-counted
+        # through collection/root summary manifests.
+        if not manifest_path.parent.name.startswith("chunk_"):
+            continue
+
+        try:
+            manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            continue
+
+        embedded_experiment_id = str(
+            manifest.get("experiment_id", "")
+        ).strip()
+
+        experiment_id = canonical_experiment_id_for_feature_path(
+            manifest_path,
+            embedded_experiment_id,
+        )
+
+        per_client = (
+            (manifest.get("outputs") or {})
+            .get("per_client")
+            or {}
+        )
+
+        if not isinstance(per_client, dict):
+            continue
+
+        for capture_id, item in per_client.items():
+            if not isinstance(item, dict):
+                continue
+
+            try:
+                count = int(
+                    item.get("packet_count", 0) or 0
+                )
+            except (TypeError, ValueError):
+                count = 0
+
+            key = (
+                str(experiment_id),
+                str(capture_id),
+            )
+
+            packet_counts[key] = (
+                packet_counts.get(key, 0)
+                + max(count, 0)
+            )
+
+    # Group aliases that currently resolve to the same real client.
+    groups = {}
+
+    for (experiment_id, capture_id), client_id in client_map.items():
+        groups.setdefault(
+            (str(experiment_id), str(client_id)),
+            []
+        ).append(str(capture_id))
+
+    drop = set()
+    reasons = []
+
+    for (experiment_id, client_id), capture_ids in groups.items():
+        counts = {
+            capture_id: packet_counts.get(
+                (experiment_id, capture_id),
+                0,
+            )
+            for capture_id in capture_ids
+        }
+
+        largest = max(counts.values(), default=0)
+
+        if largest <= 0:
+            continue
+
+        for capture_id, count in counts.items():
+            if (
+                count < 100
+                and count < largest * 0.0001
+            ):
+                key = (
+                    experiment_id,
+                    capture_id,
+                )
+
+                drop.add(key)
+
+                reasons.append(
+                    (
+                        experiment_id,
+                        capture_id,
+                        client_id,
+                        count,
+                        largest,
+                    )
+                )
+
+    if not drop:
+        return client_map, diagnostics
+
+    pruned = dict(client_map)
+
+    for key in drop:
+        pruned.pop(key, None)
+
+    # Keep diagnostics consistent with the pruned mapping.
+    kept_diagnostics = []
+
+    for item in diagnostics:
+        try:
+            key = (
+                str(item[0]),
+                str(item[2]),
+            )
+        except Exception:
+            kept_diagnostics.append(item)
+            continue
+
+        if key not in drop:
+            kept_diagnostics.append(item)
+
+    print(
+        "\nTiny retry proxy traces excluded from classifier input:"
+    )
+
+    for (
+        experiment_id,
+        capture_id,
+        client_id,
+        count,
+        largest,
+    ) in sorted(reasons):
+        print(
+            f"  {experiment_id}: "
+            f"{capture_id} -> {client_id} "
+            f"packets={count} "
+            f"largest_same_client={largest}"
+        )
+
+    return pruned, kept_diagnostics
+
+
+
+def _chunk_manifest_backs_feature(
+    path: Path,
+    experiment_id: str,
+    capture_id: str,
+) -> bool:
+    """
+    Return True when a per-client chunk feature is backed by a
+    same-directory finalized chunk manifest.
+
+    This rule is applied only to:
+        .../capture_artifacts/chunk_*/..._features.csv
+
+    Historical/non-chunk layouts retain their previous behavior.
+
+    A chunk feature is considered manifest-backed only when at least one
+    same-directory *_manifest.json belongs to the canonical coordinated run
+    and contains the capture alias in outputs.per_client.
+    """
+    path = Path(path)
+
+    if (
+        path.parent.name.startswith("chunk_")
+        and path.parent.parent.name == "capture_artifacts"
+    ):
+        manifests = sorted(
+            path.parent.glob("*_manifest.json")
+        )
+
+        if not manifests:
+            return False
+
+        for manifest_path in manifests:
+            try:
+                manifest = json.loads(
+                    manifest_path.read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except Exception:
+                continue
+
+            embedded_run_id = str(
+                manifest.get("run_id")
+                or manifest.get("experiment_id")
+                or ""
+            ).strip()
+
+            manifest_run_id = (
+                canonical_experiment_id_for_feature_path(
+                    manifest_path,
+                    embedded_run_id,
+                )
+            )
+
+            if str(manifest_run_id) != str(experiment_id):
+                continue
+
+            per_client = (
+                (manifest.get("outputs") or {})
+                .get("per_client")
+                or {}
+            )
+
+            if (
+                isinstance(per_client, dict)
+                and str(capture_id) in per_client
+            ):
+                return True
+
+        return False
+
+    return True
+
+
 def discover_inputs(root: Path, allowed_experiment_ids=None):
     candidates = sorted(
         path
@@ -156,6 +402,12 @@ def discover_inputs(root: Path, allowed_experiment_ids=None):
         if (
             "fingerprinting_dataset" not in path.parts
             and "_X_proxy" not in path.name
+            # Progressive live-monitor features are a separate
+            # inference stream. Offline dataset construction uses
+            # finalized post-capture per-client features so live
+            # retries/reconnections are not mixed with canonical
+            # capture artifacts.
+            and not path.name.endswith("_live_features.csv")
         )
     )
 
@@ -165,15 +417,63 @@ def discover_inputs(root: Path, allowed_experiment_ids=None):
         else None
     )
     grouped = {}
+    excluded_unmanifested = []
+
     for path in candidates:
         experiment_id, has_client = _feature_file_identity(path)
+
         if not experiment_id:
             continue
+
         if allowed is not None and experiment_id not in allowed:
             continue
+
+        if has_client:
+            capture_id = ""
+
+            try:
+                with path.open(
+                    newline="",
+                    encoding="utf-8",
+                ) as handle:
+                    first = next(
+                        csv.DictReader(handle),
+                        None,
+                    )
+
+                capture_id = str(
+                    (first or {}).get(
+                        "client_capture_id",
+                        "",
+                    )
+                ).strip()
+
+            except Exception:
+                capture_id = ""
+
+            if (
+                capture_id
+                and not _chunk_manifest_backs_feature(
+                    path,
+                    experiment_id,
+                    capture_id,
+                )
+            ):
+                excluded_unmanifested.append(path)
+                continue
+
         grouped.setdefault(experiment_id, []).append(
             (path, has_client)
         )
+
+    if excluded_unmanifested:
+        print(
+            "\nUnmanifested/incomplete chunk features "
+            "excluded from classifier input:"
+        )
+
+        for path in excluded_unmanifested:
+            print(f"  {path}")
 
     proxy_features = []
     for experiment_id, files in sorted(grouped.items()):
@@ -197,6 +497,12 @@ def discover_inputs(root: Path, allowed_experiment_ids=None):
     client_map, diagnostics = _discover_manifest_client_map(
         root,
         registrations,
+    )
+
+    client_map, diagnostics = _prune_tiny_retry_client_map(
+        root,
+        client_map,
+        diagnostics,
     )
 
     # In connection-granular captures, a stale/retry TCP connection from the

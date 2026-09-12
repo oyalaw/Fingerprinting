@@ -875,11 +875,22 @@ def _extract_single_feature_row(
     iats = np.diff(timestamps) if timestamps.size >= 2 else np.asarray([], dtype=np.float64)
     iats = np.maximum(iats, 0.0)
 
-    duration_sec = (
+    packet_span_sec = (
         float(timestamps[-1] - timestamps[0])
         if timestamps.size >= 2
         else 0.0
     )
+
+    # Fixed-window rates must use the actual observation interval, not the
+    # active packet span inside the bin. The overall/full-trace row continues
+    # to use first-packet to last-packet span.
+    if row_type == "window":
+        duration_sec = max(
+            0.0,
+            float(window_end_sec - window_start_sec),
+        )
+    else:
+        duration_sec = packet_span_sec
 
     bytes_total = int(frame_lengths.sum()) if frame_lengths.size else 0
     bytes_up = int(up_lengths.sum()) if up_lengths.size else 0
@@ -1126,6 +1137,15 @@ def extract_feature_rows(
     for window_index, selected in enumerate(bins):
         start = window_index * window_seconds
         end = start + window_seconds
+
+        # The final observation interval may be shorter than the nominal
+        # window size. Use the actual available interval for rate features.
+        if (
+            window_index == window_count - 1
+            and total_duration > start
+        ):
+            end = min(end, total_duration)
+
         row = _extract_single_feature_row(
             packets=selected,
             experiment_id=experiment_id,

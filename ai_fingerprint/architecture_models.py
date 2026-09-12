@@ -58,6 +58,8 @@ SIZE_NORMALIZED_EXACT_DROP = {
     "tcp_retransmission_count",
     "tls_record_count",
     "connection_count",
+    "duration_sec",
+    "idle_time_total_sec",
 }
 
 

@@ -30,7 +30,6 @@ OPTIONAL_CONTEXT_LABEL_FIELDS = [
     "dataset",
     "dataset_split",
     "operating_system",
-    "precision",
     "batch_size",
     "input_size",
     "data_partition_type",
@@ -230,9 +229,18 @@ def validate_proxy_feature_columns(
             "Proxy feature CSV must contain experiment_id"
         )
 
-    forbidden = sorted(
+    # Remove non-predictive proxy metadata first. Fields such as
+    # packet_information_threshold and packet_information_ok are retained in
+    # the feature CSV for quality auditing, but they must never enter X.
+    predictors = [
         name
         for name in columns
+        if name not in PROXY_FEATURE_METADATA_FIELDS
+    ]
+
+    forbidden = sorted(
+        name
+        for name in predictors
         if is_forbidden_predictor_field(name)
     )
     if forbidden:
@@ -240,12 +248,6 @@ def validate_proxy_feature_columns(
             "Attacker predictor input contains forbidden client/server "
             f"or resource fields: {forbidden}"
         )
-
-    predictors = [
-        name
-        for name in columns
-        if name not in PROXY_FEATURE_METADATA_FIELDS
-    ]
     if not predictors:
         raise FingerprintingDataError(
             "No network predictor columns remain after metadata removal"
@@ -423,10 +425,23 @@ def _read_ground_truth_indices(
                     client_id = str(
                         record.get("client_id", "")
                     ).strip()
-                    for field in (
-                        "device",
-                        *OPTIONAL_CONTEXT_LABEL_FIELDS,
-                    ):
+
+                    # Federated clients may emit events before receiving the
+                    # server-authoritative training/partition policy. Those
+                    # records contain local placeholder context (for example
+                    # partition client_count=1) and must not be mixed with
+                    # the authoritative post-handshake values.
+                    context_fields = ["device"]
+                    policy_status = str(
+                        record.get("training_policy_status", "")
+                    ).strip().lower()
+
+                    if policy_status != "pending_server":
+                        context_fields.extend(
+                            OPTIONAL_CONTEXT_LABEL_FIELDS
+                        )
+
+                    for field in context_fields:
                         value = record.get(field)
                         if value is None or str(value) == "":
                             continue
@@ -538,6 +553,51 @@ def _read_ground_truth_labels(
             )
     return experiment_labels
 
+
+def canonical_experiment_id_for_feature_path(
+    path: str | Path,
+    embedded_experiment_id: str,
+) -> str:
+    """
+    Resolve the canonical coordinated run ID for a proxy feature file.
+
+    Verified central results are stored under:
+
+        collected_experiments/<run_id>/proxy/...
+
+    Historical proxy artifacts may retain an earlier proxy-local
+    experiment_id inside their CSV rows even though their enclosing
+    verified collection bundle belongs to the coordinated run_id.
+
+    The enclosing collected run ID is therefore authoritative for
+    grouping/ground-truth joins. Original files remain unchanged.
+    """
+    # Preserve the lexical collected_experiments/<run_id>/proxy
+    # hierarchy. Path.resolve() may dereference a symlink used for the
+    # central collection root and thereby remove the
+    # "collected_experiments" path component needed below.
+    feature_path = Path(path).absolute()
+    parts = feature_path.parts
+
+    for idx, part in enumerate(parts):
+        if part != "collected_experiments":
+            continue
+
+        if idx + 2 >= len(parts):
+            continue
+
+        candidate = str(parts[idx + 1]).strip()
+        participant = str(parts[idx + 2]).strip().lower()
+
+        if (
+            candidate.startswith("run_")
+            and participant == "proxy"
+        ):
+            return candidate
+
+    return str(embedded_experiment_id or "").strip()
+
+
 def build_fingerprinting_dataset(
     proxy_feature_csvs: Sequence[str | Path],
     ground_truth_jsonls: Sequence[str | Path],
@@ -612,9 +672,13 @@ def build_fingerprinting_dataset(
                 reader,
                 start=2,
             ):
-                experiment_id = str(
+                embedded_experiment_id = str(
                     row.get("experiment_id", "")
                 ).strip()
+                experiment_id = canonical_experiment_id_for_feature_path(
+                    path,
+                    embedded_experiment_id,
+                )
                 client_capture_id = str(
                     row.get("client_capture_id", "") or ""
                 ).strip()
