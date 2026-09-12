@@ -259,6 +259,7 @@ def plot_confusion_counts_and_percent(
                 ha="center",
                 va="center",
                 fontsize=8 if len(classes) <= 6 else 7,
+                color="white" if normalized[i, j] >= 0.5 else "black",
             )
 
     cbar = fig.colorbar(image, ax=ax)

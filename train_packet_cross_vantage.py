@@ -137,6 +137,7 @@ def plot_confusion(
                 ha="center",
                 va="center",
                 fontsize=8,
+                color="white" if norm[i, j] >= 0.5 else "black",
             )
 
     cbar = fig.colorbar(image, ax=ax)

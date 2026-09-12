@@ -1904,6 +1904,7 @@ def _write_confusion_artifacts(
                 f"{100.0 * value:.1f}%",
                 ha="center",
                 va="center",
+                color="white" if value >= 0.5 else "black",
             )
     cbar = fig.colorbar(image, ax=ax)
     cbar.set_label("Row-normalized proportion")
