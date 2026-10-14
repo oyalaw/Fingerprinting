@@ -25,6 +25,7 @@ training-fold traces is subtracted from training and held-out values of that dev
 
 Usage:
     python3 analyze_round_features.py [--summary round_features/trace_summary.csv] [--out-dir round_features/analysis]
+    python3 analyze_round_features.py --target comp_type   # classify computation type instead of family
 """
 import argparse, os, sys
 import numpy as np
@@ -40,14 +41,40 @@ SAME_NETWORK = {"beta_vae": "vae_conv"}
 BAND = (1.5e6, 2.6e6)
 
 
+def computation_type(layer_types, flop_ops):
+    """Computation type from the model code (model_flops.csv), independent of the application label:
+    convolutional = convolutions carry > 50% of training FLOPs; recurrent = has an LSTM/GRU layer;
+    attention = has attention (Transformer encoder / BERT layers); dense = Linear layers only."""
+    layers = {kv.rsplit(":", 1)[0] for kv in str(layer_types).split("|") if ":" in kv}
+    ops = {}
+    for kv in str(flop_ops).split("|"):
+        if ":" in kv:
+            k, v = kv.rsplit(":", 1)
+            ops[k] = float(v)
+    total = sum(ops.values()) or 1.0
+    if sum(v for k, v in ops.items() if "convolution" in k) / total > 0.5:
+        return "convolutional"
+    if layers & {"LSTM", "GRU", "RNN"}:
+        return "recurrent"
+    if layers & {"NonDynamicallyQuantizableLinear", "MultiheadAttention", "GELUActivation"} or \
+            any("bmm" in k or "attention" in k for k in ops):
+        return "attention"
+    return "dense"
+
+
 def load(a):
     t = pd.read_csv(a.summary)
     meta = pd.read_csv(a.metadata)
-    fl = pd.read_csv(a.flops)[["experiment_id", "params", "train_flops_per_sample", "flops_per_param"]]
+    fl = pd.read_csv(a.flops)
+    fl["comp_type"] = [computation_type(l, o) for l, o in zip(fl["layer_types"], fl["flop_ops"])]
+    fl = fl[["experiment_id", "params", "train_flops_per_sample", "flops_per_param", "comp_type"]]
     meta = meta[meta["family"].notna()]
     t = t.merge(meta[["experiment_id", "family", "architecture", "variant", "payload_bytes"]],
                 on="experiment_id", how="inner").merge(fl, on="experiment_id", how="left")
     t["model"] = t["variant"].replace(SAME_NETWORK)
+    t["app_family"] = t["family"]
+    if a.target == "comp_type":   # every evaluation below classifies the "family" column
+        t["family"] = t["comp_type"]
     t["exp"] = t["experiment_id"].str[-8:]
     t["payload_rel_err"] = (t["payload_up_bytes"] - t["payload_bytes"]) / t["payload_bytes"]
     # passive-only quality gate: enough rounds and a stable per-round size (no ground truth used)
@@ -226,16 +253,32 @@ def main():
     ap.add_argument("--rounds", default="round_features/round_features.csv")
     ap.add_argument("--metadata", default="run_metadata.csv")
     ap.add_argument("--flops", default="model_flops.csv")
-    ap.add_argument("--out-dir", default="round_features/analysis")
+    ap.add_argument("--out-dir", default=None,
+                    help="default: round_features/analysis (family) or round_features/analysis_comptype")
+    ap.add_argument("--exclude-models", nargs="*", default=[],
+                    help="model names (variant, beta_vae merged into vae_conv) to drop before every evaluation; "
+                         "a sensitivity check only, since choosing exclusions from results inflates accuracy")
+    ap.add_argument("--target", choices=["family", "comp_type"], default="family",
+                    help="label to classify: application family, or computation type from the model code")
     a = ap.parse_args()
+    a.out_dir = a.out_dir or ("round_features/analysis" if a.target == "family" else "round_features/analysis_comptype")
     os.makedirs(a.out_dir, exist_ok=True)
     pd.set_option("display.width", 250, "display.max_rows", 500)
 
     T = load(a)
+    if a.exclude_models:
+        unknown = set(a.exclude_models) - set(T["model"])
+        if unknown:
+            sys.exit(f"unknown models in --exclude-models: {sorted(unknown)}")
+        T = T[~T["model"].isin(a.exclude_models)]
     t = T[T["ok"]].copy()
     T.to_csv(os.path.join(a.out_dir, "traces_annotated.csv"), index=False)
 
-    section("Data")
+    section(f"Data (target: {a.target})")
+    if a.exclude_models:
+        print("EXCLUDED models (sensitivity check): " + ", ".join(a.exclude_models))
+    if a.target == "comp_type":
+        print(t.drop_duplicates("model").groupby(["family", "app_family"])["model"].apply(", ".join).to_string())
     print(f"labeled traces: {len(T)}  passing quality gate (>=20 rounds, payload CV<5%, device known): {len(t)}")
     bad = T[~T["ok"]]
     if len(bad):
