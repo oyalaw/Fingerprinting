@@ -317,6 +317,22 @@ VARIANTS: Dict[str, VariantSpec] = {
         },
         {"pytorch"},
     ),
+    "distilbert_2layer": _spec(
+        "transformer", "distilbert",
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
+        {"pytorch"},
+    ),
+    "distilbert_4layer": _spec(
+        "transformer", "distilbert",
+        {
+            "text_classification": TEXT_CLASSIFICATION_DATASETS,
+            "masked_language_modeling": MASKED_LANGUAGE_MODELING_DATASETS,
+        },
+        {"pytorch"},
+    ),
     "distilbert_base": _spec(
         "transformer", "distilbert",
         {
@@ -859,6 +875,8 @@ OPTIONAL_VARIANT_DEPENDENCIES: Dict[str, List[str]] = {
     "bert_small": ["transformers"],
     "bert_base": ["transformers"],
     "bert_large": ["transformers"],
+    "distilbert_2layer": ["transformers"],
+    "distilbert_4layer": ["transformers"],
     "distilbert_base": ["transformers"],
 }
 

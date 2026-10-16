@@ -275,10 +275,18 @@ class PyTorchWorkload(Workload):
         return BertForSequenceClassification(config)
 
     def _build_hf_distilbert(self):
-        if self.variant != "distilbert_base":
+        # (dim, layers, heads, hidden_dim); variants differ only in depth.
+        settings = {
+            "distilbert_2layer": (768, 2, 12, 3072),
+            "distilbert_4layer": (768, 4, 12, 3072),
+            "distilbert_base": (768, 6, 12, 3072),
+        }
+        values = settings.get(self.variant)
+        if values is None:
             raise ValueError(
                 f"Unsupported DistilBERT variant: {self.variant!r}"
             )
+        dim, layers, heads, hidden_dim = values
         try:
             from transformers import (
                 DistilBertConfig,
@@ -294,10 +302,10 @@ class PyTorchWorkload(Workload):
         ai = self.config["ai"]
         config = DistilBertConfig(
             vocab_size=int(ai["vocab_size"]),
-            dim=768,
-            hidden_dim=3072,
-            n_layers=6,
-            n_heads=12,
+            dim=dim,
+            hidden_dim=hidden_dim,
+            n_layers=layers,
+            n_heads=heads,
             max_position_embeddings=max(int(ai["max_text_length"]) + 2, 128),
             num_labels=self.num_classes,
         )
