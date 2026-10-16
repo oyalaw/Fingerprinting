@@ -163,11 +163,16 @@ def main():
     ap.add_argument("--holdout-per-family", type=int, default=2)
     ap.add_argument("--seed", type=int, default=2027)
     ap.add_argument("--results-root", default="experiments/results")
+    ap.add_argument("--require-clock-sync", action="store_true",
+                    help="roles refuse to start if the system clock is not synchronized")
+    ap.add_argument("--hosts", nargs="*", default=[], metavar="ROLE=HOSTNAME",
+                    help="expected hostname per role, e.g. client_1=jetson-nano; roles refuse to start elsewhere")
     a = ap.parse_args()
 
     if min(a.rounds, a.rounds_large) < 100:
         sys.exit("federated.mode full_scale requires at least 100 rounds (ai_fingerprint/config.py:511); "
                  "lower that limit there first if shorter runs are intended")
+    hosts = dict(h.split("=", 1) for h in a.hosts)
     rng = random.Random(a.seed)
     out = Path(a.out_dir)
     if out.exists() and any(out.iterdir()):
@@ -244,7 +249,9 @@ def main():
                                       role_token="server" if role == "server" else role)
             c["experiment"]["run_id"] = None
             c["campaign"] = {"order": i, "repeat": rep + 1, "planned_device": c["device"]["label"],
-                             "plan": str(out / "plan.json")}
+                             "plan": str(out / "plan.json"), "require_clock_sync": a.require_clock_sync}
+            if role in hosts:
+                c["campaign"]["expected_host"] = hosts[role]
             with open(run_dir / f"{role}.yaml", "w", encoding="utf-8") as f:
                 yaml.safe_dump(c, f, sort_keys=False)
         rows.append({"order": i, "repeat": rep + 1, "family": ai["family"], "architecture": ai["architecture"],
@@ -308,8 +315,10 @@ def write_runbook(out, rows, templates):
              "```", "",
              "Once the check passes, delete the run's pcap chunks on the proxy laptop to free its disk.", "",
              "Re-run immediately if the check reports FAIL (give the repeat a new experiment number,",
-             "because the failed run's output folders already exist). Before starting, confirm that",
-             "each client's `device.label` matches `campaign.planned_device` in its config.", "",
+             "because the failed run's output folders already exist). Each role refuses to start on",
+             "the wrong kind of machine (Jetson / Linux / Windows), on a host other than",
+             "`campaign.expected_host` when set, or with an unsynchronized clock when",
+             "`campaign.require_clock_sync` is true; `AIFP_SKIP_DEVICE_CHECK=1` overrides the check.", "",
              "| order | variant | dataset | rounds | experiment | config folder |",
              "|---|---|---|---|---|---|"]
     lines += [f"| {r['order']} | {r['variant']} | {r['dataset']} | {r['rounds']} | {r['experiment']} | "

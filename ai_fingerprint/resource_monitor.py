@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import psutil
 
+from .host_environment import WifiLogger
 from .metadata import output_role_token
 
 
@@ -500,6 +501,16 @@ class ResourceMonitor:
             ),
         )
         self.jetson = JetsonCollector()
+        wifi_interval = float(monitor_cfg.get("wifi_interval_sec", 30))
+        self.wifi = (
+            WifiLogger(
+                output_dir / f"{self.experiment_id}_{role_token}_wifi.csv",
+                self.network_interface,
+                wifi_interval,
+            )
+            if wifi_interval > 0
+            else None
+        )
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -543,6 +554,8 @@ class ResourceMonitor:
             daemon=True,
         )
         self._thread.start()
+        if self.wifi is not None:
+            self.wifi.start()
 
     def stop(self) -> Dict[str, Any]:
         if not self.enabled:
@@ -552,6 +565,8 @@ class ResourceMonitor:
             self._stop_event.set()
             self._thread.join(timeout=max(5.0, self.interval_sec * 4))
             self._thread = None
+        if self.wifi is not None:
+            self.wifi.stop()
 
         # Capture one final sample after the workload exits. Do not treat
         # this unscheduled terminal sample as part of the periodic cadence

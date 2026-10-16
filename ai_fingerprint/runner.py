@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
 from .client import ExperimentClient
@@ -7,10 +8,15 @@ from .experiment_layout import materialize_role_metadata, write_role_status
 from .experiment_output import enforce_experiment_output_policy
 from .server import ExperimentServer
 from .result_collection import auto_upload_result_copy
+from .host_environment import device_preflight
 
 
 def run(config: Dict[str, Any]) -> None:
     role = config["node"]["role"]
+    # Refuse to start a config on the wrong machine (set AIFP_SKIP_DEVICE_CHECK=1 to override).
+    problems = device_preflight(config)
+    if problems and os.environ.get("AIFP_SKIP_DEVICE_CHECK") != "1":
+        raise RuntimeError("Device check failed: " + "; ".join(problems))
     enforce_experiment_output_policy(
         config,
         role=role,

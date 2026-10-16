@@ -13,6 +13,8 @@ from typing import Any, Dict, Iterable, Sequence
 
 import numpy as np
 
+from .host_environment import clock_status, host_identity, power_mode
+
 
 VALID_STATUSES = {
     "RUNNING",
@@ -88,7 +90,7 @@ def reproducibility_metadata(config: Dict[str, Any]) -> Dict[str, Any]:
     packages = {
         name: _package_version(name)
         for name in (
-            "numpy", "torch", "torchvision", "tensorflow", "flwr", "scikit-learn",
+            "numpy", "torch", "torchvision", "transformers", "tensorflow", "flwr", "scikit-learn",
             "xgboost", "pandas", "pyyaml", "psutil",
         )
     }
@@ -128,9 +130,14 @@ def reproducibility_metadata(config: Dict[str, Any]) -> Dict[str, Any]:
         "cuda_version": cuda_version,
         "cudnn_version": cudnn_version,
         "gpu_name": gpu_name,
+        "host": host_identity(),
+        "clock": clock_status(),
+        "power_mode": power_mode(),
         "seeds": {
             "execution_seed": seed,
-            "model_init_seed": seed,
+            # No framework seed is set before the model is built, so weights are initialized
+            # randomly on every run.
+            "model_init_seed": None,
             "shuffle_seed": seed,
             "partition_seed": int(partition_seed) if partition_seed is not None else None,
             "anomaly_calibration_seed": seed + int(config.get("anomaly_detection", {}).get("calibration_seed_offset", 73001)),
