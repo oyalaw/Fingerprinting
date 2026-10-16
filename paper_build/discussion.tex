@@ -1,0 +1,16 @@
+\section{Countermeasures}
+\label{sec:discussion}
+Size padding removes the size-based variant signal (Sec.~\ref{subsec:padding}) but at a
+substantial cost: padding every transfer to the largest model increases traffic
+by $1{,}086\%$, whereas inexpensive 1~MB buckets still allow $60\%$
+identification. Family leakage stems from timing, so effective defenses must
+decouple traffic timing from local computation. Candidate defenses include
+(i)~deadline-based rounds, in which every client uploads at a fixed time after
+the download regardless of when training ends, hiding the compute gap at the
+cost of round latency; (ii)~randomized upload delays, which blur the gap but
+must be large relative to its variation across families; (iii)~cover traffic or
+traffic shaping that keeps the link active during local training; and
+(iv)~relaying updates through an intermediary that batches uploads from several
+clients. Transport encryption and secure aggregation~\cite{TODO-secure-aggregation}
+protect update contents but leave transfer timing unchanged. Quantifying the
+privacy and latency trade-offs of these timing defenses is left for future work.

@@ -1,0 +1,123 @@
+\begin{abstract}
+Federated learning (FL) keeps training data on client devices, but the network
+traffic it generates can still reveal which model is being trained. We present
+CHAI-FP, a framework that characterizes how much AI model identity a passive
+observer can infer from packet-level metadata alone, without inspecting payloads
+or model parameters. CHAI-FP reconstructs the round structure of FL traffic and
+identifies models hierarchically at the family, architecture, and variant
+levels. Its key element is cross-device fingerprinting. Because FL clients train the
+same model on heterogeneous hardware and operating systems, the differences
+between their traffic reveal the architecture's compute profile. On a physical testbed with three
+heterogeneous clients (two Ubuntu, one Windows) and 32 experiments spanning convolutional, recurrent,
+transformer, and autoencoder models, cross-device fingerprinting identifies the
+family of unseen models with a balanced accuracy of 0.74, compared with 0.58 for
+per-client classification, and raises family accuracy in 5~s windows from 0.31
+to 0.51. Within a family, the architecture is identified with a mean balanced
+accuracy of 0.79 from complete traces, and convolutional architectures with 0.71
+from 5~s windows. The model payload size is a baseline leak that reveals the
+exact variant in every trace, and in 69\% from a single model download within
+a 5~s window, but it is removed by padding, whereas family identification from
+timing alone remains at 0.62, showing that concealing model
+identity in FL requires timing defenses in addition to size padding.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Federated learning, traffic analysis, side channels, model fingerprinting,
+network security, privacy.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:introduction}
+Artificial intelligence (AI) workloads are increasingly executed across edge
+devices, cloud services, and distributed learning
+systems~\cite{zhou2019edge,mcmahan2017communication}. Although encryption and
+access controls protect transmitted content and model artifacts, they do not
+conceal all characteristics of the communication generated during execution:
+packet sizes, directions, timing, volumes, and burst patterns remain observable
+to a network intermediary~\cite{sirinam2018deep}. Such metadata may reveal
+properties of an AI workload even when the observer cannot inspect model
+parameters, application data, or payloads~\cite{shuvo2025fingerprinting}.
+Federated learning (FL) is particularly exposed, because every training round
+produces a characteristic exchange in which each client downloads the global
+model, trains locally, and uploads an update.
+
+\textbf{Existing Research:} Prior studies infer neural network information from
+indirect execution observations, including memory accesses, shared caches, GPU
+execution traces, and system resource
+measurements~\cite{hua2018reverse,yan2020cache,hu2020deepsniffer,patwari2022dnn}.
+These observations require physical access to, or co-location with, the
+executing device. Network traffic is a more remote observation surface, on which
+communication protocols, training schedules, transport behavior, and network
+conditions may obscure architectural differences. Encrypted-traffic analysis
+reveals visited
+websites~\cite{panchenko2011website,wang2014effective,hayes2016kfingerprinting,sirinam2018deep},
+and PACKETPRINT~\cite{li2022packet} identifies mobile applications and user
+activities from encrypted wireless packet sequences, although its hierarchy
+captures traffic patterns rather than structural relationships among AI models.
+For AI workloads, network traffic has been used to discriminate CNN and RNN
+families in FL~\cite{shuvo2025fingerprinting}, to classify CNN and RNN
+architectures and variants from encrypted wireless traffic with results reported
+primarily at the family level~\cite{shuvo2026flare}, to identify AI applications
+and their execution phases~\cite{oyaniyi2026fingerprinting}, and to identify AI
+families from 5G scheduling metadata~\cite{shuvo2026flint}.
+
+\textbf{Gap:} The extent to which passive network observations reveal the
+structural identity of AI models beyond the family level remains insufficiently
+characterized. It is not established whether an observer can progressively
+distinguish families, architectures, and variants, how much of this information
+is available within short observation windows, or whether it survives
+countermeasures such as size padding. Moreover, existing approaches classify each
+client's traffic independently and do not exploit a defining property of FL:
+all clients train the same model concurrently on heterogeneous hardware and
+operating systems.
+
+\textbf{Motivation:} Three technical challenges motivate this investigation.
+First, different families and architectures may generate similar communication
+patterns under common FL protocols, so network similarity is an imperfect
+indicator of model structure. Second, discriminative characteristics of complete
+traces may be unavailable within short windows, which capture only portions of a
+round. Third, observations from the same execution are correlated, so randomly
+distributing them between training and testing produces optimistic estimates;
+generalization must instead be assessed on models absent from training.
+Architectural leakage also has security consequences. Knowledge of a model's
+family, architecture, or variant narrows the range of potential targets and
+helps an adversary select relevant attack techniques, for instance by training a
+surrogate of the matching architecture for model extraction or transfer-based
+adversarial attacks~\cite{TODO-model-extraction}, and it exposes proprietary
+design choices.
+
+\textbf{This Work:} We present CHAI-FP, a conditional hierarchical framework
+that infers the family, architecture, and variant of the model under training
+from passive packet metadata. CHAI-FP reconstructs the round structure of FL
+traffic, from which it derives communication features and a passive estimate of
+local training time, the compute gap between model download and upload, and it
+combines the traffic of all clients into a cross-device representation. We
+evaluate it on a physical FL testbed with three clients that differ in both
+hardware and operating system, and 32
+experiments, using model-disjoint validation on 0.5 to 5~s windows and complete
+traces.
+
+\noindent\textbf{Contributions:} The contributions of this study are threefold.
+(i)~A conditional hierarchical fingerprinting framework that identifies model
+families, architectures, and variants from passive network metadata, combining
+packet-morphology features with compute-timing features derived from the FL
+round structure; within a family, packet-morphology features identify the
+architecture with a mean balanced accuracy of 0.79.
+(ii)~Cross-device fingerprinting, which exploits the heterogeneous clients of a
+federated job to raise family identification of unseen models from 0.58 to 0.74
+for complete traces and from 0.31 to 0.51 for 5~s windows, where it also
+identifies convolutional architectures with 0.71; an ablation shows that the gain requires both
+the cross-device representation and a regularized linear classifier.
+(iii)~A model-disjoint evaluation of the observable leakage, showing that
+payload size is a baseline leak that reveals the exact variant in every trace,
+and in $69\%$ from a single model download within a 5~s window, but is
+removed by padding, whereas family identification from timing
+alone remains at 0.62, so that concealing model identity requires timing
+defenses.
+
+The remainder of the paper is organized as follows.
+Section~\ref{sec:setup} describes the experimental setup,
+Section~\ref{sec:methodology} presents the CHAI-FP framework,
+Section~\ref{sec:results} reports the results,
+Section~\ref{sec:discussion} discusses countermeasures, and
+Section~\ref{sec:conclusion} concludes the paper.

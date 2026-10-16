@@ -1,0 +1,27 @@
+\section{Related Work}
+\label{sec:related}
+\emph{Side-channel model fingerprinting.} Prior work recovers neural network
+architectures through microarchitectural and physical side channels, including
+cache timing~\cite{TODO-cache-side-channel}, power and electromagnetic
+emanations~\cite{TODO-power-em}, and GPU resource contention and memory
+traces~\cite{TODO-gpu-side-channel}. These attacks require physical access to,
+or co-location with, the device that executes the model, and they mostly target
+inference. CHAI-FP requires only passive observation of network traffic and
+targets distributed training.
+
+\emph{Traffic analysis.} Analysis of encrypted traffic identifies websites,
+applications, and user activities from packet sizes and timing~\cite{TODO-traffic-analysis},
+and recent studies infer properties of machine-learning services from their
+network behavior~\cite{TODO-ml-service-traffic}. These approaches classify
+individual flows. CHAI-FP instead exploits the synchronized multi-client
+structure of FL, in which several heterogeneous devices execute the same model
+concurrently.
+
+\emph{Attacks on federated learning.} Attacks on FL reconstruct training data
+from exchanged updates~\cite{TODO-gradient-inversion}, infer membership or data
+properties~\cite{TODO-fl-inference}, or poison the global
+model~\cite{TODO-fl-poisoning}. They assume access to update contents, which
+transport encryption and secure aggregation~\cite{TODO-secure-aggregation}
+protect. CHAI-FP uses only transport metadata, which these protections leave
+exposed, and its output, the identity of the model under training, can inform
+the choice and configuration of such attacks.
