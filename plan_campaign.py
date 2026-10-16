@@ -132,7 +132,8 @@ def round_minutes(collected):
         try:
             import pandas as pd
             r = pd.read_csv(p, usecols=["variant", "timestamp_start_utc", "timestamp_end_utc"])
-            d = (pd.to_datetime(r["timestamp_end_utc"]) - pd.to_datetime(r["timestamp_start_utc"])).dt.total_seconds()
+            d = (pd.to_datetime(r["timestamp_end_utc"], format="ISO8601")
+                 - pd.to_datetime(r["timestamp_start_utc"], format="ISO8601")).dt.total_seconds()
             out.setdefault(r["variant"].iloc[0], []).append(d.median() / 60)
         except Exception:
             pass
@@ -295,10 +296,17 @@ def write_runbook(out, rows, templates):
              "python3 main.py run --config <run>/client_2.yaml        # " + dev["client_2"],
              "python3 main.py run --config <run>/client_3.yaml        # " + dev["client_3"],
              "```", "",
-             "After the run is collected, check it before starting the next one:", "",
+             "Set `capture.extract_after: false` in the proxy config, so the proxy only captures and",
+             "finishes within minutes of the run ending. After the run is collected, copy the proxy's",
+             "pcap chunks to the DGX, extract them there in parallel, and check the run before",
+             "starting the next one:", "",
              "```bash",
+             "rsync -av --progress <user>@<proxy-host>:<repo>/experiments/staging/<run_id>/proxy/pcap/ \\",
+             "      /data/pcaps/<run_id>/",
+             "python3 extract_pcaps_parallel.py collected_experiments/<run_id> --pcap-dir /data/pcaps/<run_id>",
              "python3 check_run.py collected_experiments/<run_id> --plan " + str(out / "schedule.csv"),
              "```", "",
+             "Once the check passes, delete the run's pcap chunks on the proxy laptop to free its disk.", "",
              "Re-run immediately if the check reports FAIL (give the repeat a new experiment number,",
              "because the failed run's output folders already exist). Before starting, confirm that",
              "each client's `device.label` matches `campaign.planned_device` in its config.", "",
