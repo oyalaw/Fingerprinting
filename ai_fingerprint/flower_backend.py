@@ -46,6 +46,13 @@ SERVER_FIELDS = [
     "experiment_id", "round", "fl_framework", "clients", "aggregation_time_ms",
     "model_size_bytes", "timestamp_utc",
 ]
+# One row per client update on the server, like the custom backend's client_update_metrics.csv.
+# Flower hands the strategy all of a round's results together, so the server time is when the
+# round's aggregation began (after the last update arrived); client_send_utc is per client.
+UPDATE_FIELDS = [
+    "experiment_id", "round", "client_id", "fl_framework", "num_examples", "payload_bytes",
+    "train_loss", "client_send_utc", "server_aggregate_utc",
+]
 
 
 def _flwr():
@@ -124,11 +131,22 @@ class FlowerServer:
         n = int(fed["expected_clients"])
         rounds = int(fed["rounds"])
         metrics_csv = self.out / "round_metrics.csv"
+        updates_csv = self.out / "client_update_metrics.csv"
         exp_id = cfg["experiment"]["experiment_id"]
         logger = self.logger
 
         class LoggedFedAvg(flwr.server.strategy.FedAvg):
             def aggregate_fit(self, server_round, results, failures):
+                agg_utc = utc_now_iso()
+                for _, fit_res in results:
+                    m = fit_res.metrics or {}
+                    _append(updates_csv, UPDATE_FIELDS, {
+                        "experiment_id": exp_id, "round": server_round - 1,
+                        "client_id": m.get("client_id"), "fl_framework": "flower",
+                        "num_examples": fit_res.num_examples,
+                        "payload_bytes": _nbytes(parameters_to_ndarrays(fit_res.parameters)),
+                        "train_loss": m.get("train_loss"), "client_send_utc": m.get("client_send_utc"),
+                        "server_aggregate_utc": agg_utc})
                 t0 = time.perf_counter_ns()
                 agg = super().aggregate_fit(server_round, results, failures)
                 ms = (time.perf_counter_ns() - t0) / 1e6
@@ -220,7 +238,8 @@ class FlowerClient:
                     "timestamp_start_utc": start_utc, "timestamp_end_utc": utc_now_iso()})
                 logger.write("federated_phase", round=rnd, client_id=client_id, phase="Training",
                              phase_time_ms=train_sec * 1000.0, fl_framework="flower")
-                return params, examples, {"train_loss": float(np.mean(losses)) if losses else 0.0}
+                return params, examples, {"train_loss": float(np.mean(losses)) if losses else 0.0,
+                                          "client_id": client_id, "client_send_utc": utc_now_iso()}
 
         address = f"{host}:{port}"
         certs = _certificates(cfg)

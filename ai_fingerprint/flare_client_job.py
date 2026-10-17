@@ -63,7 +63,8 @@ def main():
             "model_size_bytes": _nbytes(params), "timestamp_start_utc": start_utc,
             "timestamp_end_utc": utc_now_iso()})
         flare.send(FLModel(params=to_dict(params), params_type=ParamsType.FULL,
-                           meta={"NUM_STEPS_CURRENT_ROUND": examples}))
+                           meta={"NUM_STEPS_CURRENT_ROUND": examples, "client_id": client_id,
+                                 "client_send_utc": utc_now_iso()}))
 
 
 if __name__ == "__main__":

@@ -146,12 +146,11 @@ class FlareServer:
 
     def serve_forever(self) -> None:
         _require_flare()
-        from nvflare.app_common.workflows.fedavg import FedAvg
         from nvflare.fuel.flare_api.flare_api import new_secure_session
         from nvflare.job_config.api import FedJob
         from nvflare.job_config.script_runner import FrameworkType, ScriptRunner
 
-        from .flare_components import WorkloadPersistor
+        from .flare_components import LoggingFedAvg, WorkloadPersistor
 
         cfg, fed = self.config, self.config["federated"]
         kits = _kits_dir(cfg)
@@ -185,7 +184,7 @@ class FlareServer:
                 time.sleep(5)
             job = FedJob(name=f"aifp_{cfg['experiment']['experiment_id']}", min_clients=n)
             job.to_server(WorkloadPersistor(), id="persistor")
-            job.to_server(FedAvg(num_clients=n, num_rounds=rounds, persistor_id="persistor"))
+            job.to_server(LoggingFedAvg(num_clients=n, num_rounds=rounds, persistor_id="persistor"))
             job.to_clients(ScriptRunner(script=str(REPO_ROOT / "ai_fingerprint" / "flare_client_job.py"),
                                         framework=FrameworkType.NUMPY))
             with tempfile.TemporaryDirectory() as tmp:
