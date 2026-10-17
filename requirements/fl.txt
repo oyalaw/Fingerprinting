@@ -6,3 +6,4 @@ torch
 torchvision
 transformers==5.16.1    # BERT / DistilBERT (built from config, no download); same version on all machines
 datasets>=5.0,<6       # AG News / IMDB text datasets (Hugging Face); 5.0.1 on the Jetson before
+huggingface-hub>=1.5,<2  # transformers 5.16.1 needs <2; datasets 5.x would otherwise pull 2.x
