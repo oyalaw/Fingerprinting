@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
 import csv
 import json
+import subprocess
+import sys
 
 from ai_fingerprint.fingerprinting_dataset import (
     FingerprintingDataError,
@@ -549,7 +552,40 @@ def discover_inputs(root: Path, allowed_experiment_ids=None):
     )
 
 
+def build_compute_tables(root: Path, collected: str, round_dir: str, reuse: bool) -> None:
+    """Round reconstruction -> single-client compute features + experiment ratios.
+
+    Runs extract_round_features.py over the collected runs (unless --reuse-round-features
+    and a trace_summary.csv already exists), then build_compute_features.py, which writes
+    fingerprinting_X_proxy_single_client.csv and fingerprinting_experiment_ratios.csv next
+    to X and Y. The ratios compare clients, so they are kept out of the per-client table.
+    """
+    scripts = Path(__file__).resolve().parent
+    summary = root / round_dir / "trace_summary.csv"
+    if not (reuse and summary.exists()):
+        print(f"\nRebuilding FL rounds from {collected} into {round_dir}/ ...")
+        subprocess.run([sys.executable, str(scripts / "extract_round_features.py"), collected,
+                        "--out-dir", round_dir], cwd=root, check=True)
+    print("\nBuilding compute-timing tables ...")
+    subprocess.run([sys.executable, str(scripts / "build_compute_features.py"),
+                    "--x", str(root / "fingerprinting_dataset" / "fingerprinting_X_proxy.csv"),
+                    "--trace-summary", str(summary),
+                    "--out-dir", str(root / "fingerprinting_dataset")], cwd=root, check=True)
+
+
 def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="Build the fingerprinting dataset (X, Y and the compute-timing tables) "
+                    "from the collected runs under the current directory")
+    ap.add_argument("--collected", default="collected_experiments",
+                    help="collected runs, for the round reconstruction")
+    ap.add_argument("--round-dir", default="round_features_v2",
+                    help="where extract_round_features.py writes trace_summary.csv")
+    ap.add_argument("--reuse-round-features", action="store_true",
+                    help="use an existing <round-dir>/trace_summary.csv instead of rebuilding rounds")
+    ap.add_argument("--no-compute-features", action="store_true",
+                    help="only build X and Y")
+    args = ap.parse_args()
     root = Path(".").resolve()
     (
         proxy_features,
@@ -624,6 +660,9 @@ def main() -> None:
     print("\nFingerprinting dataset created:")
     for key, value in result.items():
         print(f"  {key}: {value}")
+
+    if not args.no_compute_features:
+        build_compute_tables(root, args.collected, args.round_dir, args.reuse_round_features)
 
 
 if __name__ == "__main__":
