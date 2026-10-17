@@ -1,0 +1,5 @@
+# DGX analysis: dataset building, checks, extraction, figures, tests.
+-r fl.txt
+pandas>=2.1
+matplotlib>=3.8
+pytest>=8

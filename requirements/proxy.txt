@@ -1,0 +1,3 @@
+# Proxy laptop (hotspot + capture). Also needs the system tools in docs/SETUP.md:
+# tshark/dumpcap (Wireshark), ethtool, with capture permission for the proxy user.
+-r core.txt

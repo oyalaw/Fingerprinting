@@ -1,0 +1,4 @@
+# Optional FL frameworks, on the server and every client that runs them.
+# flwr 1.13.1 needs Python 3.9-3.12 (its grpcio <=1.64.3 has no Python 3.13/3.14 wheels).
+flwr==1.13.1
+nvflare==2.6.3

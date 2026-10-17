@@ -1,0 +1,8 @@
+# Machines that train or serve models: the FL server (DGX) and the three clients.
+# Install PyTorch FIRST with the platform-specific command in docs/SETUP.md (CUDA build,
+# Jetson wheel, Windows build), then install this file.
+-r core.txt
+torch
+torchvision
+transformers==5.16.1    # BERT / DistilBERT (built from config, no download); same version on all machines
+datasets>=5.0,<6       # AG News / IMDB text datasets (Hugging Face); 5.0.1 on the Jetson before
