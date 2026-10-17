@@ -84,6 +84,9 @@ def detect_device_label() -> Optional[str]:
             return "jetson_xavier"
     if "raspberry pi 5" in model:
         return "raspberry_pi_5"
+    if "dgx" in _read("/sys/class/dmi/id/product_name").lower() and "spark" in _read(
+            "/sys/class/dmi/id/product_name").lower():
+        return "nvidia_dgx_spark"
     system = platform.system()
     if system == "Windows":
         vendor = _windows_query("(Get-CimInstance Win32_ComputerSystem).Manufacturer").lower()

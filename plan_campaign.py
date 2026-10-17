@@ -168,6 +168,8 @@ def main():
     ap.add_argument("--holdout-per-family", type=int, default=2)
     ap.add_argument("--seed", type=int, default=2027)
     ap.add_argument("--results-root", default="experiments/results")
+    ap.add_argument("--device", nargs="*", default=[], metavar="ROLE=LABEL",
+                    help="override a role's device label from the reference run, e.g. server=nvidia_dgx_spark")
     ap.add_argument("--require-clock-sync", action="store_true",
                     help="roles refuse to start if the system clock is not synchronized")
     ap.add_argument("--hosts", nargs="*", default=[], metavar="ROLE=HOSTNAME",
@@ -178,6 +180,10 @@ def main():
         sys.exit("federated.mode full_scale requires at least 100 rounds (ai_fingerprint/config.py:511); "
                  "lower that limit there first if shorter runs are intended")
     hosts = dict(h.split("=", 1) for h in a.hosts)
+    for item in a.device:
+        role, label = item.split("=", 1)
+        if role not in ROLES or label not in registry.DEVICES:
+            sys.exit(f"--device {item}: role must be one of {ROLES} and label one of the registry devices")
     if not registry.fl_framework_implemented(a.fl_framework):
         sys.exit(f"--fl-framework {a.fl_framework} is listed but not implemented yet")
     rng = random.Random(a.seed)
@@ -187,6 +193,9 @@ def main():
     servers = collected_server_configs(a.collected)
     ref = Path(a.collected) / a.reference_run
     templates = {r: load_yaml(ref / r / "config.yaml") for r in ROLES}
+    for item in a.device:
+        role, label = item.split("=", 1)
+        templates[role]["device"]["label"] = label
 
     payload = {}
     if os.path.exists(a.payload_table):

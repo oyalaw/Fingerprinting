@@ -638,6 +638,7 @@ def fl_framework_implemented(name: str) -> bool:
 DEVICES = [
     "jetson_agx_orin",
     "jetson_orin_nano",
+    "nvidia_dgx_spark",
     "jetson_xavier",
     "dell_desktop",
     "dell_laptop",
@@ -675,6 +676,7 @@ OPERATING_SYSTEMS = [
 
 OPERATING_SYSTEMS_BY_DEVICE = {
     "jetson_agx_orin": ["ubuntu", "other_linux", "custom"],
+    "nvidia_dgx_spark": ["ubuntu", "other_linux", "custom"],
     "jetson_orin_nano": ["ubuntu", "other_linux", "custom"],
     "jetson_xavier": ["ubuntu", "other_linux", "custom"],
     "dell_desktop": [
