@@ -129,6 +129,21 @@ def _identity_command(args) -> None:
     print(f"Saved {identity} to {path}")
 
 
+def _choose_fl_framework() -> str:
+    """FL framework from the registry menu; unimplemented ones are shown but cannot be selected."""
+    names = registry.fl_frameworks()
+    shown = [
+        f"{name:22s} {registry.FL_FRAMEWORKS[name]['label']} [{registry.FL_FRAMEWORKS[name]['transport']}]"
+        + ("" if registry.fl_framework_implemented(name) else "  (not yet supported)")
+        for name in names
+    ]
+    while True:
+        picked = names[shown.index(choose("Select FL framework", shown))]
+        if registry.fl_framework_implemented(picked):
+            return picked
+        print(f"{picked} is not implemented yet; choose custom_fedavg_tcp for now.")
+
+
 def _client_identity() -> str:
     """Federated client ID from this machine's saved identity, else chosen from a fixed list."""
     identity = load_identity()
@@ -681,6 +696,7 @@ def interactive_configure(
                 20,
             )
         elif role == "server":
+            config["federated"]["fl_framework"] = _choose_fl_framework()
             config["execution"]["learning_rate"] = float(
                 ask_text("Learning rate", "0.001")
             )

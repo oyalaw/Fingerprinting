@@ -112,6 +112,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "expected_clients": 2,
         "client_id": "client_1",
         "aggregation": "fedavg",
+        "fl_framework": "custom_fedavg_tcp",
         "policy_source": "server",
         "policy_applied": False,
         "policy_id": None,
@@ -521,6 +522,16 @@ def validate_config(config: Dict[str, Any]) -> None:
         if int(federated.get("expected_clients", 0)) <= 0:
             raise ConfigError(
                 "federated.expected_clients must be positive"
+            )
+        fl_framework = str(federated.get("fl_framework", "custom_fedavg_tcp"))
+        if fl_framework not in registry.FL_FRAMEWORKS:
+            raise ConfigError(
+                f"federated.fl_framework must be one of {', '.join(registry.fl_frameworks())}"
+            )
+        if not registry.fl_framework_implemented(fl_framework):
+            raise ConfigError(
+                f"federated.fl_framework={fl_framework} is listed but not implemented yet; "
+                "use custom_fedavg_tcp"
             )
         if federated.get("aggregation", "fedavg") != "fedavg":
             raise ConfigError(

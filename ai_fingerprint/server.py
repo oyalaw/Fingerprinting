@@ -371,6 +371,9 @@ class ExperimentServer:
             "aggregation_rule": self.config["federated"].get(
                 "aggregation", "fedavg"
             ),
+            "fl_framework": self.config["federated"].get(
+                "fl_framework", "custom_fedavg_tcp"
+            ),
             "input_size": self.config["ai"]["input_size"],
             "batch_size": self.config["execution"]["batch_size"],
             "learning_rate": self.config["execution"]["learning_rate"],

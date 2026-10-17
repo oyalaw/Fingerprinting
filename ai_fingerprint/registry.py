@@ -605,6 +605,36 @@ FRAMEWORKS: Dict[str, Set[str]] = {
 
 RUNTIMES = ["native", "tflite", "onnxruntime", "tensorrt"]
 
+# Federated-learning frameworks. Only implemented ones can be run; the others are listed so the
+# choice is recorded consistently once support is added. "transport" is what an on-path
+# observer sees.
+FL_FRAMEWORKS: Dict[str, Dict[str, object]] = {
+    "custom_fedavg_tcp": {"label": "Custom synchronous FedAvg (this code base)",
+                          "transport": "length-prefixed frames over TCP or TLS", "implemented": True},
+    "flower": {"label": "Flower (flwr)", "transport": "gRPC over HTTP/2", "implemented": False},
+    "nvidia_flare": {"label": "NVIDIA FLARE", "transport": "gRPC with mutual TLS", "implemented": False},
+    "fedml": {"label": "FedML / TensorOpera", "transport": "MPI, gRPC or MQTT", "implemented": False},
+    "openfl": {"label": "OpenFL (Intel / LF AI)", "transport": "gRPC with mutual TLS", "implemented": False},
+    "fate": {"label": "FATE (WeBank / LF AI)", "transport": "gRPC, Eggroll or Pulsar", "implemented": False},
+    "pysyft": {"label": "PySyft (OpenMined)", "transport": "WebSockets or HTTP", "implemented": False},
+    "tensorflow_federated": {"label": "TensorFlow Federated", "transport": "simulation (no network)",
+                             "implemented": False},
+    "fedscale": {"label": "FedScale", "transport": "gRPC", "implemented": False},
+    "plato": {"label": "Plato", "transport": "Socket.IO / WebSockets", "implemented": False},
+    "ibm_fl": {"label": "IBM Federated Learning", "transport": "HTTP/REST or gRPC", "implemented": False},
+    "substra": {"label": "Substra (Owkin / LF AI)", "transport": "HTTP/REST", "implemented": False},
+    "paddlefl": {"label": "PaddleFL (Baidu)", "transport": "gRPC", "implemented": False},
+    "fed_biomed": {"label": "Fed-BioMed (Inria)", "transport": "MQTT and REST", "implemented": False},
+}
+
+
+def fl_frameworks() -> List[str]:
+    return list(FL_FRAMEWORKS)
+
+
+def fl_framework_implemented(name: str) -> bool:
+    return bool(FL_FRAMEWORKS.get(name, {}).get("implemented"))
+
 DEVICES = [
     "jetson_agx_orin",
     "jetson_orin_nano",
