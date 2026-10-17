@@ -48,6 +48,17 @@ def proxy_settings(run_dir):
     return cfg, summary
 
 
+def run_uses_tls(run_dir):
+    """Whether the run's FL traffic is TLS, from the collected server config: the custom backend
+    and Flower with transport.kind tls, or NVIDIA FLARE (TLS unless provisioned as clear)."""
+    p = Path(run_dir) / "server" / "config.yaml"
+    if not p.exists():
+        return False
+    cfg = yaml.safe_load(open(p, encoding="utf-8")) or {}
+    fl = str((cfg.get("federated") or {}).get("fl_framework", "custom_fedavg_tcp"))
+    return fl == "nvidia_flare" or str((cfg.get("transport") or {}).get("kind", "tcp")).lower() == "tls"
+
+
 def chunk_files(pcap_dir):
     """Rotated chunks in capture order. dumpcap ring-buffer names carry the sequence number,
     so name order is the capture order and survives copying (unlike modification times)."""
@@ -113,7 +124,9 @@ def main():
     if not conns:
         sys.exit("no client connections found in the proxy summary or the pcaps")
     aliases = {c["connection_key"]: c["alias"] for c in conns}
-    print(f"{run_id}: {len(chunks)} chunks, {len(conns)} client connections ({source})", flush=True)
+    tls_ports = [proxy_port] if run_uses_tls(run_dir) else None
+    print(f"{run_id}: {len(chunks)} chunks, {len(conns)} client connections ({source})"
+          f"{', decoding port %d as TLS' % proxy_port if run_uses_tls(run_dir) else ''}", flush=True)
 
     out_root = run_dir / "proxy" / "capture_artifacts"
     jobs = []
@@ -136,7 +149,8 @@ def main():
                                         "chunk_index": i, "chunk_count": len(chunks),
                                         "packet_information_threshold": int(cap.get("packet_information_threshold", 2)),
                                         "upstream_server_excluded": upstream},
-            packet_information_threshold=int(cap.get("packet_information_threshold", 2)))})
+            packet_information_threshold=int(cap.get("packet_information_threshold", 2)),
+            tls_ports=tls_ports)})
 
     workers = a.workers or min(len(jobs), 8) or 1
     results, failed = {}, []

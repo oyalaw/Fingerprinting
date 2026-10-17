@@ -14,7 +14,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ..fingerprinting_dataset import SAFE_SEQUENCE_FIELDS, sanitize_packet_sequence
+from ..fingerprinting_dataset import (
+    EXTENDED_SEQUENCE_FIELDS,
+    SAFE_SEQUENCE_FIELDS,
+    sanitize_packet_sequence,
+)
 
 
 FEATURE_SCHEMA_VERSION = "1.2"
@@ -43,6 +47,15 @@ class PacketRecord:
     retransmission: int
     tls_record_lengths: Tuple[int, ...]
     direction: str = "unknown"
+    # Extended header fields (-1 / empty when not available, e.g. older CSVs).
+    tcp_len: int = -1                 # exact TCP payload bytes (tshark tcp.len)
+    tcp_seq: int = -1                 # relative sequence number
+    tcp_ack_num: int = -1             # relative acknowledgement number
+    tcp_window: int = -1              # receive window (scaled when known)
+    tls_content_types: Tuple[int, ...] = ()   # 20 ccs, 21 alert, 22 handshake, 23 application data
+    tcp_dup_ack: int = 0
+    tcp_out_of_order: int = 0
+    tcp_lost_segment: int = 0
 
 
 @dataclass(frozen=True)
@@ -76,7 +89,19 @@ TSHARK_FIELDS: Tuple[str, ...] = (
     "tcp.analysis.retransmission",
     "tcp.analysis.fast_retransmission",
     "tls.record.length",
+    "tcp.len",
+    "tcp.seq",
+    "tcp.ack",
+    "tcp.window_size",
+    "tls.record.content_type",
+    "tcp.analysis.duplicate_ack",
+    "tcp.analysis.out_of_order",
+    "tcp.analysis.lost_segment",
 )
+
+# Per-packet columns added after the original ones; readers treat them as optional so
+# sequences written before they existed still load.
+EXTENDED_PACKET_FIELDS: Tuple[str, ...] = tuple(EXTENDED_SEQUENCE_FIELDS)
 
 
 PACKET_CSV_FIELDS: Tuple[str, ...] = (
@@ -99,7 +124,20 @@ PACKET_CSV_FIELDS: Tuple[str, ...] = (
     "retransmission",
     "tls_record_count",
     "tls_record_lengths",
-)
+) + EXTENDED_PACKET_FIELDS
+
+
+def _extended_values(packet: "PacketRecord") -> Dict[str, Any]:
+    return {
+        "tcp_len": packet.tcp_len,
+        "tcp_seq": packet.tcp_seq,
+        "tcp_ack_num": packet.tcp_ack_num,
+        "tcp_window": packet.tcp_window,
+        "tls_content_types": ";".join(str(v) for v in packet.tls_content_types),
+        "tcp_dup_ack": packet.tcp_dup_ack,
+        "tcp_out_of_order": packet.tcp_out_of_order,
+        "tcp_lost_segment": packet.tcp_lost_segment,
+    }
 
 
 def _utc_now_iso() -> str:
@@ -314,16 +352,23 @@ def read_pcap_with_tshark(
     client_ip: Optional[str] = None,
     client_ips: Optional[Sequence[str]] = None,
     isolate_client_facing: bool = True,
+    tls_ports: Optional[Sequence[int]] = None,
 ) -> List[PacketRecord]:
     pcap = Path(pcap_path)
     if not pcap.exists():
         raise FeatureExtractionError(f"PCAP file not found: {pcap}")
 
     tshark = find_tshark()
+    # tshark does not decode TLS on non-standard ports such as the proxy's 8080; decode
+    # the given ports as TLS so record lengths and content types are filled in.
+    decode_as: List[str] = []
+    for port in tls_ports or ():
+        decode_as.extend(["-d", f"tcp.port=={int(port)},tls"])
     command = [
         tshark,
         "-r",
         str(pcap),
+        *decode_as,
         "-Y",
         "ip or ipv6",
         "-T",
@@ -392,6 +437,14 @@ def read_pcap_with_tshark(
             tcp_retransmission,
             tcp_fast_retransmission,
             tls_record_length,
+            tcp_len,
+            tcp_seq,
+            tcp_ack_number,
+            tcp_window,
+            tls_content_type,
+            tcp_dup_ack,
+            tcp_out_of_order,
+            tcp_lost_segment,
         ) = columns[: len(TSHARK_FIELDS)]
 
         src_ip = _first_nonempty(ip_src, ipv6_src)
@@ -450,6 +503,14 @@ def read_pcap_with_tshark(
                 retransmission=retransmission,
                 tls_record_lengths=_parse_multi_int(tls_record_length),
                 direction=direction,
+                tcp_len=_to_int(tcp_len, -1) if (tcp_len or "").strip() else -1,
+                tcp_seq=_to_int(tcp_seq, -1) if (tcp_seq or "").strip() else -1,
+                tcp_ack_num=_to_int(tcp_ack_number, -1) if (tcp_ack_number or "").strip() else -1,
+                tcp_window=_to_int(tcp_window, -1) if (tcp_window or "").strip() else -1,
+                tls_content_types=_parse_multi_int(tls_content_type),
+                tcp_dup_ack=int(bool((tcp_dup_ack or "").strip())),
+                tcp_out_of_order=int(bool((tcp_out_of_order or "").strip())),
+                tcp_lost_segment=int(bool((tcp_lost_segment or "").strip())),
             )
         )
 
@@ -567,6 +628,14 @@ def read_packet_sequence_csv(
                         str(row.get("tls_record_lengths", "") or "")
                     ),
                     direction=direction,
+                    tcp_len=_to_int(str(row.get("tcp_len", "") or "-1"), -1),
+                    tcp_seq=_to_int(str(row.get("tcp_seq", "") or "-1"), -1),
+                    tcp_ack_num=_to_int(str(row.get("tcp_ack_num", "") or "-1"), -1),
+                    tcp_window=_to_int(str(row.get("tcp_window", "") or "-1"), -1),
+                    tls_content_types=_parse_multi_int(str(row.get("tls_content_types", "") or "")),
+                    tcp_dup_ack=_to_int(str(row.get("tcp_dup_ack", "") or "0")),
+                    tcp_out_of_order=_to_int(str(row.get("tcp_out_of_order", "") or "0")),
+                    tcp_lost_segment=_to_int(str(row.get("tcp_lost_segment", "") or "0")),
                 )
             )
 
@@ -1259,6 +1328,7 @@ def write_packet_sequence_csv(
                         str(length)
                         for length in packet.tls_record_lengths
                     ),
+                    **_extended_values(packet),
                 }
             )
 
@@ -1305,6 +1375,7 @@ def write_fingerprint_sequence_csv(
                         str(length)
                         for length in packet.tls_record_lengths
                     ),
+                    **_extended_values(packet),
                 }
             )
     return target
@@ -1846,6 +1917,7 @@ def extract_capture_artifacts(
     window_sizes_sec: Optional[Sequence[float]] = None,
     capture_isolation_metadata: Optional[Dict[str, Any]] = None,
     packet_information_threshold: int = 2,
+    tls_ports: Optional[Sequence[int]] = None,
 ) -> Dict[str, Any]:
     pcap = Path(pcap_path)
     if not pcap.exists():
@@ -1870,6 +1942,7 @@ def extract_capture_artifacts(
         client_ip=client_ip,
         client_ips=clients,
         isolate_client_facing=bool(clients),
+        tls_ports=tls_ports,
     )
 
     source_capture = {

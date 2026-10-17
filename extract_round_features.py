@@ -20,7 +20,8 @@ import argparse, csv, glob, json, os, re, sys
 import numpy as np
 import pandas as pd
 
-HDR = 66            # Ethernet(14) + IPv4(20) + TCP with timestamps(32): frame_length - HDR = TCP payload
+HDR = 66            # Ethernet(14) + IPv4(20) + TCP with timestamps(32); connections without the
+                    # timestamp option use 54 (see trace_header_length)
 MERGE_GAP = 900.0   # s. Rounds strictly alternate download/upload, so transfers are split on direction
                     # change only; silence inside a transfer (Wi-Fi stalls, TCP RTO backoff of 10-100 s on
                     # large models) must NOT split it. 900 s only guards against joining across restarts.
@@ -44,15 +45,18 @@ def load_trace(paths):
     """Load one client's packets across all capture chunks onto one timeline.
     Long runs are split into chunks whose relative_time_sec restarts near 0; each chunk is shifted
     by (its capture_start_epoch - the first chunk's) unless its times are already global."""
-    cols = ["relative_time_sec", "frame_length", "direction"]
+    cols = ["relative_time_sec", "frame_length", "direction", "tcp_len"]
     starts = {p: chunk_start_epoch(p) for p in paths}
     known = [e for e in starts.values() if e is not None]
     t_ref = min(known) if known else None
     parts = []
     for p in sorted(paths, key=lambda q: (starts[q] or 0, q)):
         # tolerant read: truncated last rows / NA frame lengths are dropped
-        d = pd.read_csv(p, usecols=cols, dtype={"frame_length": "float64", "direction": "string"},
-                        on_bad_lines="skip").dropna()
+        d = pd.read_csv(p, usecols=lambda c: c in cols,
+                        dtype={"frame_length": "float64", "direction": "string"}, on_bad_lines="skip")
+        if "tcp_len" not in d:
+            d["tcp_len"] = -1.0
+        d = d.dropna(subset=["relative_time_sec", "frame_length", "direction"])
         if len(d) and t_ref is not None and starts[p] is not None:
             off = starts[p] - t_ref
             if off > 1 and d["relative_time_sec"].min() < off - 30:   # chunk-local clock -> shift
@@ -60,9 +64,21 @@ def load_trace(paths):
         parts.append(d)
     d = pd.concat(parts, ignore_index=True)
     d = d.sort_values("relative_time_sec", kind="stable").reset_index(drop=True)
-    d["payload"] = (d["frame_length"] - HDR).clip(lower=0).astype("int64")
+    # Exact TCP payload (tshark tcp.len) where the sequence has it; otherwise frame length minus
+    # the connection's inferred header length.
+    estimate = (d["frame_length"] - trace_header_length(d)).clip(lower=0)
+    exact = pd.to_numeric(d["tcp_len"], errors="coerce").fillna(-1)
+    d["payload"] = exact.where(exact >= 0, estimate).astype("int64")
     return d[d["payload"] > 0][["relative_time_sec", "payload", "direction"]].reset_index(drop=True)
 
+
+
+def trace_header_length(d):
+    """Header bytes per frame for this connection, inferred from pure acknowledgments: 66 with the
+    TCP timestamp option (Linux default), 54 without it (Windows default). Assuming 66 for a
+    connection without timestamps under-counts every full data packet by 12 bytes (~0.8%)."""
+    small = d["frame_length"].value_counts()
+    return 54 if small.get(54, 0) > small.get(HDR, 0) else HDR
 
 def fine_transfers(d):
     """Pass 1: same-direction runs of data packets, tolerating tiny opposite-direction packets."""

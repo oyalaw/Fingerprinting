@@ -69,7 +69,21 @@ SEQUENCE_IDENTITY_FIELDS = {
     "dst_port",
 }
 
-SAFE_SEQUENCE_FIELDS = [
+# Header fields added after the original sequence schema. They are optional when reading,
+# so sequences written before they existed remain valid. Sequence/ack numbers are relative
+# per connection, so none of these identify an endpoint.
+EXTENDED_SEQUENCE_FIELDS = [
+    "tcp_len",
+    "tcp_seq",
+    "tcp_ack_num",
+    "tcp_window",
+    "tls_content_types",
+    "tcp_dup_ack",
+    "tcp_out_of_order",
+    "tcp_lost_segment",
+]
+
+SAFE_SEQUENCE_BASE_FIELDS = [
     "experiment_id",
     "packet_index",
     "relative_time_sec",
@@ -85,6 +99,7 @@ SAFE_SEQUENCE_FIELDS = [
     "tls_record_count",
     "tls_record_lengths",
 ]
+SAFE_SEQUENCE_FIELDS = SAFE_SEQUENCE_BASE_FIELDS + EXTENDED_SEQUENCE_FIELDS
 
 # Exact fields that must never appear in attacker predictor input.
 FORBIDDEN_PREDICTOR_FIELDS = {
@@ -292,7 +307,7 @@ def sanitize_packet_sequence(
 
         missing = [
             name
-            for name in SAFE_SEQUENCE_FIELDS
+            for name in SAFE_SEQUENCE_BASE_FIELDS
             if name not in fieldnames
         ]
         if missing:

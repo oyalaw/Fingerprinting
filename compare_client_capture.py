@@ -30,15 +30,16 @@ def client_side_trace(pcap, client_ip, server_port):
     """Packets of the client's FL connection as seen on the client: time, payload, direction."""
     out = subprocess.run(
         ["tshark", "-r", pcap, "-Y", f"tcp && ip.addr=={client_ip} && tcp.port=={server_port}",
-         "-T", "fields", "-e", "frame.time_epoch", "-e", "frame.len", "-e", "ip.src"],
+         "-T", "fields", "-e", "frame.time_epoch", "-e", "frame.len", "-e", "ip.src", "-e", "tcp.len"],
         capture_output=True, text=True, check=True).stdout
-    rows = [l.split("\t") for l in out.splitlines() if l.count("\t") == 2]
-    d = pd.DataFrame(rows, columns=["t", "frame_length", "src"])
+    rows = [l.split("\t") for l in out.splitlines() if l.count("\t") == 3]
+    d = pd.DataFrame(rows, columns=["t", "frame_length", "src", "tcp_len"])
     d["relative_time_sec"] = d["t"].astype(float)
     d["frame_length"] = d["frame_length"].astype(float)
     d["direction"] = np.where(d["src"] == client_ip, "up", "down")
     d = d.sort_values("relative_time_sec").reset_index(drop=True)
-    d["payload"] = (d["frame_length"] - trace_header_length(d)).clip(lower=0).astype("int64")
+    exact = pd.to_numeric(d["tcp_len"], errors="coerce")
+    d["payload"] = exact.where(exact.notna(), (d["frame_length"] - trace_header_length(d)).clip(lower=0)).astype("int64")
     return d[d["payload"] > 0][["relative_time_sec", "payload", "direction"]].reset_index(drop=True)
 
 
