@@ -573,8 +573,14 @@ class UCIHARSource(BaseSource):
                 )
             dataset_root.mkdir(parents=True, exist_ok=True)
             archive = dataset_root / "uci_har.zip"
-            _download_file(UCI_HAR_URL, archive)
+            if not archive.exists():
+                _download_file(UCI_HAR_URL, archive)
             _safe_extract_zip(archive, dataset_root)
+            # The UCI download is a zip inside a zip: uci_har.zip holds
+            # "UCI HAR Dataset.zip", which holds the "UCI HAR Dataset" folder.
+            inner = dataset_root / "UCI HAR Dataset.zip"
+            if not extracted.exists() and inner.exists():
+                _safe_extract_zip(inner, dataset_root)
 
         actual = "train" if split == "train" else "test"
         y_path = extracted / actual / f"y_{actual}.txt"
