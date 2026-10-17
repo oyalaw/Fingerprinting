@@ -78,8 +78,15 @@ def clock_status() -> Dict[str, Any]:
                 "offset_sec": _float(r"System time\s*:\s*([\d.]+) seconds", out), "raw": out.strip()[:800]}
     out = _run(["timedatectl", "show", "-p", "NTPSynchronized", "-p", "NTP"])
     if out and "NTPSynchronized" in out:
+        status = _run(["timedatectl", "timesync-status"]) or ""
+        offset = None
+        m = re.search(r"Offset:\s*([+-]?[\d.]+)\s*(us|ms|s)\b", status)
+        if m:
+            offset = float(m.group(1)) * {"us": 1e-6, "ms": 1e-3, "s": 1.0}[m.group(2)]
+        server = re.search(r"Server:\s*(\S+)", status)
         return {"source": "timedatectl", "synchronized": "NTPSynchronized=yes" in out,
-                "offset_sec": None, "raw": out.strip()}
+                "offset_sec": offset, "server": server.group(1) if server else None,
+                "raw": (out + status).strip()[:800]}
     return {"source": None, "synchronized": None, "offset_sec": None, "raw": out}
 
 
