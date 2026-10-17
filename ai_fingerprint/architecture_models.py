@@ -31,6 +31,10 @@ MODEL_METADATA_FIELDS = {
     "trace_end_offset_sec",
     "window_start_global_sec",
     "window_end_global_sec",
+    # Window-quality audit metadata. These remain in X for auditing
+    # but must never enter the predictor matrix.
+    "packet_information_threshold",
+    "packet_information_ok",
 }
 
 # Size-normalized mode deliberately suppresses the dominant absolute model
@@ -220,23 +224,31 @@ def _matrix(
 
 
 def fisher_score_ranking(
-    X: np.ndarray,
+    X: Any,
     labels: Sequence[str],
-    feature_columns: Sequence[str],
+    feature_columns: Any,
 ) -> List[Dict[str, Any]]:
     """Rank features using the multiclass Fisher score.
 
     The score is between-class dispersion divided by within-class
     dispersion. It is computed only from predictor features and labels;
     experiment IDs and endpoint identity never enter the calculation.
+
+    Called as fisher_score_ranking(X, labels, feature_columns), or with
+    rows as fisher_score_ranking(rows, feature_columns, target_key).
     """
+    if not isinstance(X, np.ndarray):
+        rows, columns, target_key = X, list(labels), str(feature_columns)
+        return fisher_score_ranking(
+            _matrix(rows, columns), [str(row[target_key]) for row in rows], columns
+        )
     if X.ndim != 2 or X.shape[1] != len(feature_columns):
         raise ArchitectureModelError("Invalid feature matrix for Fisher score")
     y = np.asarray(labels, dtype=object)
     classes = sorted(set(str(value) for value in labels))
     if len(classes) < 2:
         return [
-            {"feature": name, "score": 0.0}
+            {"feature": name, "score": 0.0, "fisher_score": 0.0}
             for name in feature_columns
         ]
 
@@ -256,7 +268,7 @@ def fisher_score_ranking(
     scores = numerator / np.maximum(denominator, 1e-12)
     ranking = sorted(
         (
-            {"feature": name, "score": float(score)}
+            {"feature": name, "score": float(score), "fisher_score": float(score)}
             for name, score in zip(feature_columns, scores)
         ),
         key=lambda item: item["score"],
@@ -265,18 +277,36 @@ def fisher_score_ranking(
     return ranking
 
 
+def select_fisher_features(
+    rows: Sequence[Mapping[str, Any]],
+    feature_columns: Sequence[str],
+    target_key: str,
+    top_k: int = FISHER_TOP_K,
+    min_score: float = 0.0,
+    min_features: int = 1,
+) -> tuple[List[str], List[Dict[str, Any]]]:
+    """Top-k features by Fisher score, dropping those below min_score but
+    keeping at least min_features."""
+    labels = [str(row[target_key]) for row in rows]
+    X = _matrix(rows, feature_columns)
+    ranking = fisher_score_ranking(X, labels, feature_columns)
+    keep = max(1, min(int(top_k), len(ranking)))
+    selected = [item["feature"] for item in ranking[:keep] if item["score"] >= float(min_score)]
+    floor = max(1, min(int(min_features), len(ranking)))
+    if len(selected) < floor:
+        selected = [item["feature"] for item in ranking[:floor]]
+    return selected, ranking
+
+
 def _select_fisher_features(
     rows: Sequence[Mapping[str, Any]],
     feature_columns: Sequence[str],
     target_key: str,
     top_k: int = FISHER_TOP_K,
+    min_score: float = 0.0,
+    min_features: int = 1,
 ) -> tuple[List[str], List[Dict[str, Any]]]:
-    labels = [str(row[target_key]) for row in rows]
-    X = _matrix(rows, feature_columns)
-    ranking = fisher_score_ranking(X, labels, feature_columns)
-    keep = max(1, min(int(top_k), len(ranking)))
-    selected = [item["feature"] for item in ranking[:keep]]
-    return selected, ranking
+    return select_fisher_features(rows, feature_columns, target_key, top_k, min_score, min_features)
 
 
 def _groups_per_class(
@@ -380,14 +410,94 @@ def _evaluate_grouped(
     return result
 
 
+def _random_forest_factory():
+    sk = _require_sklearn()
+    return sk["RandomForestClassifier"](
+        n_estimators=300,
+        min_samples_leaf=2,
+        class_weight="balanced_subsample",
+        random_state=42,
+        n_jobs=-1,
+    )
+
+
+def _evaluate_grouped_with_fisher(
+    rows: Sequence[Mapping[str, Any]],
+    feature_columns: Sequence[str],
+    target_key: str,
+    fisher_top_k: int = FISHER_TOP_K,
+    fisher_min_score: float = 0.0,
+    fisher_min_features: int = 1,
+    classifier_factory=None,
+) -> Dict[str, Any]:
+    """Experiment-grouped CV in which Fisher selection is refitted inside
+    every training fold, so held-out experiments never influence which
+    features are used. Reports how often each feature was selected."""
+    factory = classifier_factory or _random_forest_factory
+    labels = [str(row[target_key]) for row in rows]
+    groups = [str(row.get("experiment_id", "")) for row in rows]
+    fold_selections: List[List[str]] = []
+
+    class _FoldLocalFisher:
+        """Classifier wrapper: select on the training rows, then fit."""
+
+        def __init__(self):
+            self.columns: List[str] = []
+            self.model = None
+            self.classes_ = None
+
+        def fit(self, index, y):
+            train_rows = [rows[int(i)] for i in index[:, 0]]
+            self.columns, _ = select_fisher_features(
+                train_rows, feature_columns, target_key,
+                top_k=fisher_top_k, min_score=fisher_min_score,
+                min_features=fisher_min_features,
+            )
+            fold_selections.append(list(self.columns))
+            self.model = factory()
+            self.model.fit(_matrix(train_rows, self.columns), y)
+            self.classes_ = self.model.classes_
+            return self
+
+        def _X(self, index):
+            return _matrix([rows[int(i)] for i in index[:, 0]], self.columns)
+
+        def predict(self, index):
+            return self.model.predict(self._X(index))
+
+        def predict_proba(self, index):
+            return self.model.predict_proba(self._X(index))
+
+    index = np.arange(len(rows), dtype=np.float64).reshape(-1, 1)
+    evaluation = _evaluate_grouped(index, labels, groups, _FoldLocalFisher)
+    if evaluation.get("status") == "evaluated":
+        counts: Dict[str, int] = defaultdict(int)
+        for selected in fold_selections:
+            for name in selected:
+                counts[name] += 1
+        folds = max(1, len(fold_selections))
+        evaluation["feature_selection"] = {
+            "method": "fisher_score",
+            "fitted_inside_each_training_fold": True,
+            "fisher_top_k": int(fisher_top_k),
+            "fold_selected_features": fold_selections,
+            "selection_stability": {
+                name: count / folds
+                for name, count in sorted(counts.items(), key=lambda kv: -kv[1])
+            },
+        }
+    return evaluation
+
+
 def _train_stage(
     rows: Sequence[Mapping[str, Any]],
     feature_columns: Sequence[str],
     target_key: str,
     fisher_top_k: int = FISHER_TOP_K,
+    fisher_min_score: float = 0.0,
+    fisher_min_features: int = 1,
 ) -> Dict[str, Any]:
-    sk = _require_sklearn()
-    RandomForestClassifier = sk["RandomForestClassifier"]
+    _require_sklearn()
 
     labels = [str(row[target_key]) for row in rows]
     classes = sorted(set(labels))
@@ -403,27 +513,29 @@ def _train_stage(
             "fisher_ranking": [],
         }
 
+    # The deployed model selects on all rows; the reported evaluation refits
+    # the selection inside each training fold so it is not optimistic.
     selected_columns, fisher_ranking = _select_fisher_features(
         rows,
         feature_columns,
         target_key,
         top_k=fisher_top_k,
+        min_score=fisher_min_score,
+        min_features=fisher_min_features,
     )
     X = _matrix(rows, selected_columns)
     groups = [str(row.get("experiment_id", "")) for row in rows]
 
-    def factory():
-        return RandomForestClassifier(
-            n_estimators=300,
-            min_samples_leaf=2,
-            class_weight="balanced_subsample",
-            random_state=42,
-            n_jobs=-1,
-        )
+    evaluation = _evaluate_grouped_with_fisher(
+        rows,
+        feature_columns,
+        target_key,
+        fisher_top_k=fisher_top_k,
+        fisher_min_score=fisher_min_score,
+        fisher_min_features=fisher_min_features,
+    )
 
-    evaluation = _evaluate_grouped(X, labels, groups, factory)
-
-    model = factory()
+    model = _random_forest_factory()
     model.fit(X, labels)
 
     importances = getattr(model, "feature_importances_", None)
@@ -463,6 +575,8 @@ def train_hierarchy_bundle(
     feature_mode: str,
     window_size_sec: Optional[float] = None,
     fisher_top_k: int = FISHER_TOP_K,
+    fisher_min_score: float = 0.0,
+    fisher_min_features: int = 1,
 ) -> Dict[str, Any]:
     if mode not in {"final", "realtime"}:
         raise ArchitectureModelError("mode must be final or realtime")
@@ -499,6 +613,8 @@ def train_hierarchy_bundle(
         feature_columns,
         "_family",
         fisher_top_k=fisher_top_k,
+        fisher_min_score=fisher_min_score,
+        fisher_min_features=fisher_min_features,
     )
 
     architecture_by_family: Dict[str, Any] = {}
@@ -513,6 +629,8 @@ def train_hierarchy_bundle(
             feature_columns,
             "_architecture",
             fisher_top_k=fisher_top_k,
+            fisher_min_score=fisher_min_score,
+            fisher_min_features=fisher_min_features,
         )
     stages["architecture_by_family"] = architecture_by_family
 
@@ -535,6 +653,8 @@ def train_hierarchy_bundle(
             feature_columns,
             "_variant",
             fisher_top_k=fisher_top_k,
+            fisher_min_score=fisher_min_score,
+            fisher_min_features=fisher_min_features,
         )
     stages["variant_by_parent"] = variant_by_parent
 
@@ -558,6 +678,8 @@ def train_hierarchy_bundle(
             feature_columns,
             "_application",
             fisher_top_k=fisher_top_k,
+            fisher_min_score=fisher_min_score,
+            fisher_min_features=fisher_min_features,
         )
     stages["application_by_parent"] = application_by_parent
 
@@ -592,6 +714,28 @@ def train_hierarchy_bundle(
     with bundle_path.open("wb") as handle:
         pickle.dump(bundle, handle)
 
+    fisher_rows = []
+
+    def _collect(stage_name: str, stage: Mapping[str, Any]) -> None:
+        for rank, item in enumerate(stage.get("fisher_ranking") or [], start=1):
+            fisher_rows.append({
+                "stage": stage_name, "rank": rank, "feature": item["feature"],
+                "fisher_score": item["score"],
+                "selected": item["feature"] in (stage.get("feature_columns") or []),
+            })
+
+    _collect("family", stages["family"])
+    for group in ("architecture_by_family", "variant_by_parent", "application_by_parent"):
+        for key, stage in stages[group].items():
+            _collect(f"{group}:{key}", stage)
+    fisher_scores_csv = target / "fisher_scores.csv"
+    with fisher_scores_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=["stage", "rank", "feature", "fisher_score", "selected"]
+        )
+        writer.writeheader()
+        writer.writerows(fisher_rows)
+
     metadata = bundle_metadata(bundle)
     metadata_path = target / "metadata.json"
     metadata_path.write_text(
@@ -602,6 +746,7 @@ def train_hierarchy_bundle(
     return {
         "bundle_path": str(bundle_path),
         "metadata_path": str(metadata_path),
+        "fisher_scores_csv": str(fisher_scores_csv),
         **metadata,
     }
 
