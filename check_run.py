@@ -10,6 +10,7 @@ For each run directory in collected_experiments it checks:
                cover the planned rounds for every client
   payload      the rebuilt upload size matches the logged model size (within --payload-tol)
   devices      client device labels match the campaign plan (with --plan)
+  drops        the proxy capture dropped no packets (FAIL above --max-drop-frac, WARN for any)
 
 A run is FAIL if any required check fails, WARN if only soft checks do (e.g. a few rounds missing),
 PASS otherwise. The exit code is 1 if any run FAILs.
@@ -47,6 +48,19 @@ def proxy_capture_complete(run_dir):
         except Exception:
             return False
     return False
+
+
+def capture_drops(run_dir):
+    """Capture statistics the proxy recorded (dumpcap received/dropped), or None for runs
+    collected before the proxy saved them."""
+    p = os.path.join(run_dir, "proxy", "capture_chunks_manifest.json")
+    if not os.path.exists(p):
+        return None
+    try:
+        stats = json.load(open(p)).get("capture_statistics") or {}
+    except Exception:
+        return None
+    return stats if stats.get("packets_dropped") is not None else None
 
 
 def planned_devices(plan_csv):
@@ -90,6 +104,13 @@ def check(run_dir, a, plan_dev):
             add(f"device {c}", "fail", got == plan_dev.get(c), f"{got} (planned {plan_dev.get(c)})")
 
     add("proxy capture_complete", "fail", proxy_capture_complete(run_dir))
+    drops = capture_drops(run_dir)
+    if drops is not None:
+        n, frac = int(drops["packets_dropped"]), float(drops.get("drop_fraction") or 0.0)
+        detail = f"{n} packets dropped ({100 * frac:.4f}%)"
+        add("capture drops", "fail", frac <= a.max_drop_frac, detail)
+        if n and frac <= a.max_drop_frac:
+            add("capture drops (any)", "warn", False, detail)
 
     seqs = glob.glob(os.path.join(run_dir, "proxy", "**", "*__trace_*_fingerprint_sequence.csv"), recursive=True)
     by_trace = {}
@@ -128,6 +149,8 @@ def main():
     ap.add_argument("--min-round-frac", type=float, default=0.95,
                     help="FAIL if fewer than this share of planned rounds is rebuilt for a client")
     ap.add_argument("--payload-tol", type=float, default=0.01)
+    ap.add_argument("--max-drop-frac", type=float, default=0.001,
+                    help="FAIL if the proxy capture dropped more than this share of packets (WARN for any drop)")
     ap.add_argument("--report", help="append one row per check to this CSV")
     a = ap.parse_args()
 

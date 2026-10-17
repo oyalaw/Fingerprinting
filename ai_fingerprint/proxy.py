@@ -17,6 +17,7 @@ from .capture import (
     CaptureError,
     build_capture_filter,
     inspect_capture_interface,
+    capture_statistics,
     start_capture_process,
     stop_capture_process,
     discover_capture_chunks,
@@ -1263,6 +1264,10 @@ class BlindTCPProxy:
         stop_capture_process(self._capture_process)
         self._capture_process = None
         self._restore_capture_offloads()
+        capture_stats = capture_statistics(self.pcap_path)
+        if capture_stats.get("packets_dropped"):
+            print(f"[proxy] WARNING: capture dropped {capture_stats['packets_dropped']} packets "
+                  f"({100 * capture_stats.get('drop_fraction', 0):.3f}%)")
 
         chunks = discover_capture_chunks(self.pcap_path)
         chunk_summary = capture_chunks_summary(self.pcap_path)
@@ -1273,6 +1278,7 @@ class BlindTCPProxy:
             "total_capture_bytes": chunk_summary["total_capture_bytes"],
             "capture_complete": bool(chunks),
             "pcap_chunk_files": [str(path) for path in chunks],
+            "capture_statistics": capture_stats,
         }
         atomic_write_json(
             self.output_dir / "capture_chunks_manifest.json",
@@ -1284,6 +1290,7 @@ class BlindTCPProxy:
                 "total_capture_bytes": chunk_summary["total_capture_bytes"],
                 "rotation_enabled": bool(capture.get("rotation_enabled", True)),
                 "rotation_size_mb": int(capture.get("rotation_size_mb", 2048)),
+                "capture_statistics": capture_stats,
                 "chunks": [
                     {
                         "index": index,
@@ -1395,6 +1402,7 @@ class BlindTCPProxy:
                 "streaming_extraction": "pcap_chunk_sequential",
                 "rotation_enabled": bool(capture.get("rotation_enabled", True)),
                 "rotation_size_mb": int(capture.get("rotation_size_mb", 2048)),
+                "capture_statistics": capture_stats,
                 "chunks": [
                     {
                         "index": index,

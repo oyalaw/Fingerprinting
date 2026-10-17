@@ -193,7 +193,12 @@ def start_capture_process(
         command.extend(["-f", capture_filter])
 
     print("[capture] command:", " ".join(command))
-    process = subprocess.Popen(command)
+    # dumpcap writes its start-up messages and, when stopped, its packet
+    # statistics (received/dropped) to stderr; keep them for the manifest.
+    log_path = capture_log_path(output_path)
+    log_handle = log_path.open("w", encoding="utf-8")
+    process = subprocess.Popen(command, stderr=log_handle)
+    process.aifp_capture_log = log_path  # type: ignore[attr-defined]
 
     # Detect immediate startup failures such as missing capture privileges,
     # invalid interfaces, or an unavailable device before the experiment
@@ -201,10 +206,12 @@ def start_capture_process(
     time.sleep(0.25)
     return_code = process.poll()
     if return_code is not None and return_code != 0:
+        log_handle.flush()
+        detail = log_path.read_text(encoding="utf-8", errors="replace").strip()[-600:]
         raise CaptureError(
             "Capture process failed to start successfully. "
             f"Return code: {return_code}. Check interface name and "
-            "dumpcap/tshark capture permissions."
+            f"dumpcap/tshark capture permissions. {detail}"
         )
 
     return process
@@ -212,6 +219,63 @@ def start_capture_process(
 
 def stop_capture_process(process: subprocess.Popen) -> None:
     _stop_capture_process(process)
+
+
+def capture_log_path(output: str | Path) -> Path:
+    output = Path(output)
+    return output.with_name(f"{output.stem}_dumpcap.log")
+
+
+def parse_capture_statistics(text: str) -> Dict[str, Any]:
+    """Packets captured / received / dropped from dumpcap or tshark stderr.
+
+    dumpcap:  "Packets received/dropped on interface 'wlo1': 120/3
+               (pcap:0/dumpcap:3/flushed:0/ps_ifdrop:0) (97.5%)"
+    tshark:   "120 packets captured" and "3 packets dropped from wlo1"
+    Drops mean the capture missed packets that crossed the interface.
+    """
+    import re
+
+    stats: Dict[str, Any] = {"source": None, "packets_captured": None,
+                             "packets_received": None, "packets_dropped": None}
+    m = re.search(r"Packets captured:\s*(\d+)", text)
+    if m:
+        stats["packets_captured"] = int(m.group(1))
+    received = dropped = 0
+    found = False
+    for m in re.finditer(r"Packets received/dropped on interface [^:]*:\s*(\d+)/(\d+)"
+                         r"(?:\s*\(([^)]*)\))?", text):
+        found = True
+        received += int(m.group(1))
+        dropped += int(m.group(2))
+        for part in (m.group(3) or "").split("/"):
+            if ":" in part:
+                key, value = part.split(":", 1)
+                if value.strip().isdigit():
+                    name = f"drops_{key.strip()}"
+                    stats[name] = int(stats.get(name, 0)) + int(value.strip())
+    if found:
+        stats.update({"source": "dumpcap", "packets_received": received, "packets_dropped": dropped})
+    else:
+        m = re.search(r"(\d+)\s+packets? captured", text)
+        if m:
+            stats.update({"source": "tshark", "packets_captured": int(m.group(1))})
+            drops = [int(x) for x in re.findall(r"(\d+)\s+packets? dropped", text)]
+            stats["packets_dropped"] = sum(drops) if drops else 0
+    total = stats.get("packets_received") or stats.get("packets_captured")
+    if stats["packets_dropped"] is not None and total:
+        stats["drop_fraction"] = stats["packets_dropped"] / (total + (0 if stats["source"] == "dumpcap"
+                                                                       else stats["packets_dropped"]))
+    return stats
+
+
+def capture_statistics(output: str | Path) -> Dict[str, Any]:
+    path = capture_log_path(output)
+    if not path.exists():
+        return {"source": None, "error": f"{path.name} not found"}
+    stats = parse_capture_statistics(path.read_text(encoding="utf-8", errors="replace"))
+    stats["log"] = str(path)
+    return stats
 
 
 def discover_capture_chunks(output: str | Path) -> list[Path]:
