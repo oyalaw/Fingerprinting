@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import psutil
 
-from .host_environment import WifiLogger
+from .host_environment import WifiLogger, tcp_counter_delta, tcp_counters
 from .metadata import output_role_token
 
 
@@ -546,6 +546,7 @@ class ResourceMonitor:
             return
 
         self._stop_event.clear()
+        self._tcp_start = tcp_counters()
         self._start_monotonic = time.monotonic()
         self._last_energy_time = self._start_monotonic
         self._thread = threading.Thread(
@@ -816,6 +817,8 @@ class ResourceMonitor:
             "network_interface": last.get("network_interface"),
             "bytes_sent": last.get("bytes_sent", 0),
             "bytes_received": last.get("bytes_received", 0),
+            # TCP retransmissions over the run (whole host): a quality check of the link.
+            **tcp_counter_delta(getattr(self, "_tcp_start", {}) or {}, tcp_counters()),
             "cpu_usage_percent": self._metric_summary(
                 "cpu_usage_percent"
             ),

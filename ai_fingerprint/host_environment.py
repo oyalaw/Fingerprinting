@@ -136,6 +136,38 @@ def device_preflight(config: Dict[str, Any]) -> List[str]:
     return problems
 
 
+def tcp_counters() -> Dict[str, Any]:
+    """System-wide TCP segment counters (sent, retransmitted, received), for the change over a run.
+    They include all TCP traffic of the host, so keep other traffic off the testbed machines."""
+    if platform.system() == "Windows":
+        out = _run(["netstat", "-s", "-p", "tcp"]) or ""
+        sent = _float(r"Segments Sent\s*=\s*(\d+)", out)
+        retrans = _float(r"Segments Retransmitted\s*=\s*(\d+)", out)
+        received = _float(r"Segments Received\s*=\s*(\d+)", out)
+        source = "netstat" if out else None
+    else:
+        try:
+            lines = [l.split() for l in Path("/proc/net/snmp").read_text().splitlines() if l.startswith("Tcp:")]
+            row = dict(zip(lines[0][1:], lines[1][1:]))
+            sent, retrans, received = (float(row.get(k)) if row.get(k) else None
+                                       for k in ("OutSegs", "RetransSegs", "InSegs"))
+            source = "proc_net_snmp"
+        except Exception:
+            sent = retrans = received = None
+            source = None
+    return {"source": source, "out_segments": sent, "retrans_segments": retrans, "in_segments": received}
+
+
+def tcp_counter_delta(start: Dict[str, Any], end: Dict[str, Any]) -> Dict[str, Any]:
+    def diff(key):
+        a, b = start.get(key), end.get(key)
+        return int(b - a) if a is not None and b is not None and b >= a else None
+    out, retrans = diff("out_segments"), diff("retrans_segments")
+    return {"tcp_counter_source": end.get("source"), "tcp_out_segments": out,
+            "tcp_retrans_segments": retrans, "tcp_in_segments": diff("in_segments"),
+            "tcp_retrans_rate": (retrans / out) if out and retrans is not None else None}
+
+
 def wifi_sample(interface: Optional[str]) -> Dict[str, Any]:
     """One reading of Wi-Fi link quality for the given interface."""
     row: Dict[str, Any] = {k: None for k in WIFI_FIELDS}
