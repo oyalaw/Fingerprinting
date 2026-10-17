@@ -26,3 +26,6 @@ server.key
 
 # testbed TLS material from main.py tls-provision (private keys)
 tls/
+collected_experiments/
+round_features*/
+fingerprinting_results/
