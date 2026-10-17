@@ -255,8 +255,12 @@ class FlareClient:
         self.logger.refresh_base(cfg)
         role_cfg = _effective_config(cfg)
         out = Path(role_cfg).parent
-        self.logger.write("network_registration", client_id=client_id, local_ip=None, local_port=None,
-                          transport="flare_grpc", fl_framework="nvidia_flare")
+        from .flower_backend import _local_ip_towards
+        host, port = str(cfg["node"]["host"]), int(cfg["node"]["port"])
+        self.logger.write("network_registration", client_id=client_id,
+                          local_ip=_local_ip_towards(host, port), local_port=None,
+                          remote_host=host, remote_port=port, transport="flare_grpc",
+                          fl_framework="nvidia_flare")
         monitor = ResourceMonitor(cfg)
         self.logger.write("experiment_start", fl_framework="nvidia_flare")
         monitor.start()

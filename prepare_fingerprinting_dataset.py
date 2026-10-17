@@ -93,7 +93,9 @@ def _read_network_registrations(ground_truth_paths):
                         local_port = int(record.get("local_port", 0) or 0)
                     except (TypeError, ValueError):
                         local_port = 0
-                    if not (experiment_id and local_ip and local_port and client_id):
+                    # local_port 0: Flower / NVIDIA FLARE clients, which do not expose
+                    # their source port; matched by IP when the IP is unique (below).
+                    if not (experiment_id and local_ip and client_id):
                         continue
                     key = (experiment_id, local_ip, local_port)
                     previous = mapping.get(key)
@@ -132,6 +134,11 @@ def _discover_manifest_client_map(root: Path, registrations):
                 except (TypeError, ValueError):
                     port = 0
                 actual = registrations.get((experiment_id, ip, port))
+                if not actual:
+                    owners = {cid for (exp, rip, rport), cid in registrations.items()
+                              if exp == experiment_id and rip == ip and rport == 0}
+                    if len(owners) == 1:
+                        actual = next(iter(owners))
                 if not actual:
                     continue
                 key=(experiment_id, str(capture_id))

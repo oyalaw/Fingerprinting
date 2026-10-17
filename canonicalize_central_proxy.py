@@ -101,6 +101,11 @@ def _read_ground_truth_registration_state(
                 connection = None
                 if ip and port > 0:
                     connection = (ip, port)
+                elif ip:
+                    # Flower and NVIDIA FLARE do not expose the client's source
+                    # port: (ip, 0) anchors the client by IP only and is resolved
+                    # to that IP's observed connections when the IP is unique.
+                    connection = (ip, 0)
 
                 if event == "network_registration":
                     if connection:
@@ -221,6 +226,15 @@ def _manifest_entries(run_root: Path, run_id: str):
                     "client_port": port,
                     "packet_count": packet_count,
                     "safe_path": safe_path,
+
+                    # Preserve the original combined-capture clock.
+                    # These values are metadata only and are excluded
+                    # from the classifier predictor matrix.
+                    "capture_start_epoch": capture_start_epoch,
+                    "trace_start_offset_sec": trace_offset,
+
+                    # Safe-sequence relative times are reconstructed
+                    # into absolute packet epochs from this base.
                     "base_epoch": (
                         capture_start_epoch
                         + trace_offset
@@ -322,7 +336,10 @@ def _choose_connections(
             # If the IP is ambiguous across logical clients, retain exact
             # ground-truth registration rather than making an unsafe guess.
             if len(ip_owners.get(ip, set())) != 1:
-                resolved.add(seed)
+                if int(seed[1] or 0) > 0:
+                    resolved.add(seed)
+                # An IP-only anchor cannot be resolved safely when several
+                # clients share the IP; leave it out rather than guess.
                 continue
 
             same_ip = sorted(
@@ -332,7 +349,8 @@ def _choose_connections(
             )
 
             if not same_ip:
-                resolved.add(seed)
+                if int(seed[1] or 0) > 0:
+                    resolved.add(seed)
                 continue
 
             if len(same_ip) > 1:
@@ -689,11 +707,47 @@ def canonicalize_collected_proxy(
                 packet_information_threshold=2,
             )
 
+            # The per-client safe sequences reconstruct packet timestamps
+            # as absolute epochs. Preserve a common run-level proxy clock
+            # instead of rebasing every selected client independently.
+            #
+            # For multi-chunk captures the earliest capture_start_epoch among
+            # all manifest entries becomes t=0 for the experiment. Therefore
+            # every client's global offsets remain comparable across chunks.
+            run_capture_start_epoch = min(
+                float(entry["capture_start_epoch"])
+                for entry in entries
+            )
+
+            trace_start_offset_sec = max(
+                0.0,
+                packets[0].timestamp_epoch
+                - run_capture_start_epoch,
+            )
+
+            trace_end_offset_sec = max(
+                trace_start_offset_sec,
+                packets[-1].timestamp_epoch
+                - run_capture_start_epoch,
+            )
+
             duration = max(
                 0.0,
                 packets[-1].timestamp_epoch
                 - packets[0].timestamp_epoch,
             )
+
+            # Internal consistency guard.
+            global_duration = (
+                trace_end_offset_sec
+                - trace_start_offset_sec
+            )
+            if abs(global_duration - duration) > 1e-6:
+                raise CanonicalizationError(
+                    f"{run_id}/{client_id}: inconsistent canonical "
+                    f"timeline duration: packet={duration:.9f}s "
+                    f"global={global_duration:.9f}s"
+                )
 
             canonical_rows = []
 
@@ -711,10 +765,20 @@ def canonicalize_collected_proxy(
                     # grouping metadata. The dataset builder excludes
                     # this field from predictor X.
                     "client_capture_id": client_id,
-                    "trace_start_offset_sec": 0.0,
-                    "trace_end_offset_sec": duration,
-                    "window_start_global_sec": start,
-                    "window_end_global_sec": end,
+
+                    # Experiment-global proxy timing metadata.
+                    # window_start_sec/window_end_sec inside row remain
+                    # client-relative and are not overwritten.
+                    "trace_start_offset_sec":
+                        trace_start_offset_sec,
+                    "trace_end_offset_sec":
+                        trace_end_offset_sec,
+                    "window_start_global_sec": (
+                        trace_start_offset_sec + start
+                    ),
+                    "window_end_global_sec": (
+                        trace_start_offset_sec + end
+                    ),
                 }
 
                 enriched.update(
