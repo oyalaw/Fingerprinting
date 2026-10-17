@@ -23,3 +23,6 @@ smoke_output/
 
 server.key
 *.pem
+
+# testbed TLS material from main.py tls-provision (private keys)
+tls/
