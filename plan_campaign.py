@@ -162,6 +162,8 @@ def main():
     ap.add_argument("--transport", choices=("tcp", "tls"), default="tcp")
     ap.add_argument("--fl-framework", default="custom_fedavg_tcp", choices=registry.fl_frameworks(),
                     help="federated.fl_framework for every run (only implemented ones are accepted)")
+    ap.add_argument("--flare-kits", default="flare_kits/aifp/prod_00",
+                    help="with --fl-framework nvidia_flare: provisioned prod_* folder, same path on every machine")
     ap.add_argument("--holdout-per-family", type=int, default=2)
     ap.add_argument("--seed", type=int, default=2027)
     ap.add_argument("--results-root", default="experiments/results")
@@ -244,6 +246,8 @@ def main():
             fed = c["federated"]
             fed.update({"rounds": rounds, "expected_clients": 3, "fl_framework": a.fl_framework,
                         "policy_applied": False, "policy_id": None})
+            if a.fl_framework == "nvidia_flare":
+                fed["flare"] = {"kits_dir": a.flare_kits}
             c["transport"]["kind"] = a.transport
             if a.transport == "tls" and role == "server":
                 c["transport"]["auto_generate_self_signed"] = True

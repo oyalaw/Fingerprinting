@@ -24,16 +24,17 @@ def run(config: Dict[str, Any]) -> None:
     materialize_role_metadata(config)
     write_role_status(config, "RUNNING")
     try:
-        flower = (
-            str(config.get("federated", {}).get("fl_framework", "custom_fedavg_tcp")) == "flower"
-            and config.get("execution", {}).get("deployment") == "federated"
-        )
-        if flower:
-            from .flower_backend import FlowerClient, FlowerServer
+        server_cls, client_cls = ExperimentServer, ExperimentClient
+        if config.get("execution", {}).get("deployment") == "federated":
+            fl_framework = str(config.get("federated", {}).get("fl_framework", "custom_fedavg_tcp"))
+            if fl_framework == "flower":
+                from .flower_backend import FlowerClient as client_cls, FlowerServer as server_cls
+            elif fl_framework == "nvidia_flare":
+                from .flare_backend import FlareClient as client_cls, FlareServer as server_cls
         if role == "server":
-            (FlowerServer if flower else ExperimentServer)(config).serve_forever()
+            server_cls(config).serve_forever()
         elif role == "client":
-            (FlowerClient if flower else ExperimentClient)(config).run()
+            client_cls(config).run()
         else:
             raise ValueError(f"Unsupported role: {role}")
     except KeyboardInterrupt:

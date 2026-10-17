@@ -612,7 +612,7 @@ FL_FRAMEWORKS: Dict[str, Dict[str, object]] = {
     "custom_fedavg_tcp": {"label": "Custom synchronous FedAvg (this code base)",
                           "transport": "length-prefixed frames over TCP or TLS", "implemented": True},
     "flower": {"label": "Flower (flwr)", "transport": "gRPC over HTTP/2", "implemented": True},
-    "nvidia_flare": {"label": "NVIDIA FLARE", "transport": "gRPC with mutual TLS", "implemented": False},
+    "nvidia_flare": {"label": "NVIDIA FLARE", "transport": "gRPC (plaintext, TLS or mutual TLS)", "implemented": True},
     "fedml": {"label": "FedML / TensorOpera", "transport": "MPI, gRPC or MQTT", "implemented": False},
     "openfl": {"label": "OpenFL (Intel / LF AI)", "transport": "gRPC with mutual TLS", "implemented": False},
     "fate": {"label": "FATE (WeBank / LF AI)", "transport": "gRPC, Eggroll or Pulsar", "implemented": False},

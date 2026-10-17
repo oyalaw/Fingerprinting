@@ -1345,6 +1345,20 @@ def build_parser() -> argparse.ArgumentParser:
     identity_parser.add_argument("--os", dest="operating_system", choices=registry.OPERATING_SYSTEMS)
     identity_parser.add_argument("--show", action="store_true", help="print the saved identity and exit")
 
+    flare_parser = subparsers.add_parser(
+        "flare-provision",
+        help="Provision NVIDIA FLARE startup kits for the testbed (clients connect via the proxy)",
+    )
+    flare_parser.add_argument("--out", default="flare_kits")
+    flare_parser.add_argument("--project", default="aifp")
+    flare_parser.add_argument("--server-host", required=True, help="address of the FL server machine")
+    flare_parser.add_argument("--fl-port", type=int, default=8080, help="server port = proxy upstream port")
+    flare_parser.add_argument("--admin-port", type=int, default=8003)
+    flare_parser.add_argument("--proxy-host", required=True, help="address clients connect to (the proxy)")
+    flare_parser.add_argument("--proxy-port", type=int, default=8080)
+    flare_parser.add_argument("--clients", nargs="+", default=["client_1", "client_2", "client_3"])
+    flare_parser.add_argument("--security", choices=["clear", "tls", "mtls"], default="mtls")
+
     run_parser = subparsers.add_parser(
         "run",
         help="Run a client or server from a configuration file",
@@ -1549,6 +1563,14 @@ def main() -> None:
             config = interactive_configure()
             save_config(config, args.output)
             print(f"Configuration saved to {args.output}")
+            return
+
+        if args.command == "flare-provision":
+            from .flare_backend import provision
+            prod = provision(args.out, args.project, args.server_host, args.fl_port, args.admin_port,
+                             args.proxy_host, args.proxy_port, args.clients, args.security)
+            print(f"Startup kits in {prod}; copy each site's folder to its machine and set "
+                  f"federated.flare.kits_dir to {prod} in every role's config.")
             return
 
         if args.command == "identity":

@@ -88,11 +88,11 @@ def _local_ip_towards(host: str, port: int) -> Optional[str]:
         return None
 
 
-def _labels(config: Dict[str, Any]) -> Dict[str, Any]:
+def _labels(config: Dict[str, Any], fl_framework: str = "flower") -> Dict[str, Any]:
     ai, fed = config["ai"], config["federated"]
     return {"experiment_id": config["experiment"]["experiment_id"], "family": ai["family"],
             "architecture": ai["architecture"], "variant": ai["variant"], "application": ai["application"],
-            "dataset": ai["dataset"], "framework": ai["framework"], "fl_framework": "flower",
+            "dataset": ai["dataset"], "framework": ai["framework"], "fl_framework": fl_framework,
             "global_rounds": int(fed["rounds"]), "local_epochs": int(fed["local_epochs"]),
             "steps_per_epoch": int(fed["steps_per_epoch"])}
 
