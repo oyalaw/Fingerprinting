@@ -149,6 +149,7 @@ def test_interactive_federated_client_does_not_prompt_for_server_policy_controls
             "Select device label": "dell_desktop",
             "Select operating system": "ubuntu",
             "Select network transport": "tcp",
+            "Select the federated client ID of this machine": "client_2",
         }
         value = wanted.get(prompt, options[0])
         assert value in options, (prompt, value, options)
@@ -158,8 +159,6 @@ def test_interactive_federated_client_does_not_prompt_for_server_policy_controls
         prompts.append(prompt)
         if prompt == "Experiment results root":
             return str(tmp_path)
-        if prompt == "Federated client ID":
-            return "client_2"
         return str(default)
 
     def fake_int(prompt, default=None):
@@ -179,8 +178,11 @@ def test_interactive_federated_client_does_not_prompt_for_server_policy_controls
     monkeypatch.setattr(cli, "ask_int", fake_int)
     monkeypatch.setattr(cli, "ask_yes_no", fake_yes_no)
 
+    # no saved machine identity: the client ID comes from the fixed menu, never free text
+    monkeypatch.setenv("AIFP_NODE_IDENTITY", str(tmp_path / "node_identity.yaml"))
     cfg = cli.interactive_configure(forced_role="client")
     assert cfg["federated"]["client_id"] == "client_2"
+    assert "Federated client ID" not in prompts
     for forbidden_prompt in (
         "Image input size",
         "Batch size",

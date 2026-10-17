@@ -41,6 +41,14 @@ from .experiment_layout import (
     next_experiment_number,
     normalize_experiment_id,
 )
+from .node_identity import (
+    CLIENT_IDS,
+    ROLES,
+    detected_identity,
+    identity_path,
+    load_identity,
+    save_identity,
+)
 from .networking import (
     candidate_interfaces,
     detect_consensus_interface,
@@ -77,6 +85,57 @@ def choose(prompt: str, choices: List[str]) -> str:
         except ValueError:
             pass
         print("Enter one of the displayed numbers.")
+
+
+def _device_identity() -> tuple[str, str]:
+    """Device and OS labels from this machine's saved identity, else detected and confirmed."""
+    identity = load_identity()
+    if identity and identity.get("device_label") and identity.get("operating_system"):
+        print(f"Device: {identity['device_label']} / {identity['operating_system']} "
+              f"(from {identity_path()})")
+        return identity["device_label"], identity["operating_system"]
+    detected = detected_identity()
+    label, osname = detected["device_label"], detected["operating_system"]
+    if label and osname and ask_yes_no(f"Detected device {label} running {osname}; use it", True):
+        return label, osname
+    label = choose("Select device label", registry.DEVICES)
+    if label == "custom":
+        label = ask_text("Custom device label", "custom")
+    osname = choose("Select operating system", registry.operating_systems_for_device(label))
+    if osname == "custom":
+        osname = ask_text("Custom operating system label", "custom")
+    return label, osname
+
+
+def _identity_command(args) -> None:
+    """Create or update this machine's identity. Every value comes from detection or a fixed
+    menu, never free text; command-line flags make it non-interactive."""
+    current = load_identity() or {}
+    if args.show:
+        print(f"{identity_path()}: {current or 'not set'}")
+        return
+    detected = detected_identity()
+    role = args.role or choose("Role of this machine", ROLES)
+    label = args.device or current.get("device_label") or detected["device_label"]
+    if not args.device and not (label and ask_yes_no(f"Device label {label}; correct", True)):
+        label = choose("Select device label", registry.DEVICES)
+    osname = args.operating_system or current.get("operating_system") or detected["operating_system"]
+    if not args.operating_system and not (osname and ask_yes_no(f"Operating system {osname}; correct", True)):
+        osname = choose("Select operating system", registry.operating_systems_for_device(label))
+    identity = {"role": role, "device_label": label, "operating_system": osname}
+    if role == "client":
+        identity["client_id"] = args.client_id or choose("Federated client ID of this machine", CLIENT_IDS)
+    path = save_identity(identity)
+    print(f"Saved {identity} to {path}")
+
+
+def _client_identity() -> str:
+    """Federated client ID from this machine's saved identity, else chosen from a fixed list."""
+    identity = load_identity()
+    if identity and identity.get("client_id"):
+        print(f"Federated client ID: {identity['client_id']} (from {identity_path()})")
+        return identity["client_id"]
+    return choose("Select the federated client ID of this machine", CLIENT_IDS)
 
 
 def ask_text(prompt: str, default: str | None = None) -> str:
@@ -470,19 +529,8 @@ def interactive_configure(
                 ask_text("Normal-score threshold percentile", "95")
             )
 
-    config["device"]["label"] = choose("Select device label", registry.DEVICES)
-    if config["device"]["label"] == "custom":
-        config["device"]["label"] = ask_text("Custom device label", "custom")
-
-    operating_system = choose(
-        "Select operating system",
-        registry.operating_systems_for_device(config["device"]["label"]),
-    )
-    if operating_system == "custom":
-        operating_system = ask_text(
-            "Custom operating system label",
-            "custom",
-        )
+    device_label, operating_system = _device_identity()
+    config["device"]["label"] = device_label
     config["device"]["operating_system"] = operating_system
 
     if deployment != "local":
@@ -682,10 +730,7 @@ def interactive_configure(
             partition["seed"] = None
             config["federated"]["policy_source"] = "server"
         else:
-            config["federated"]["client_id"] = ask_text(
-                "Federated client ID",
-                "client_1",
-            )
+            config["federated"]["client_id"] = _client_identity()
             config["federated"]["policy_source"] = "server"
 
     if task == "training" and deployment == "federated":
@@ -1274,6 +1319,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output YAML path",
     )
 
+    identity_parser = subparsers.add_parser(
+        "identity",
+        help="Set this machine's client ID, device and OS once (used by configure and run)",
+    )
+    identity_parser.add_argument("--role", choices=ROLES)
+    identity_parser.add_argument("--client-id", choices=CLIENT_IDS)
+    identity_parser.add_argument("--device", choices=registry.DEVICES)
+    identity_parser.add_argument("--os", dest="operating_system", choices=registry.OPERATING_SYSTEMS)
+    identity_parser.add_argument("--show", action="store_true", help="print the saved identity and exit")
+
     run_parser = subparsers.add_parser(
         "run",
         help="Run a client or server from a configuration file",
@@ -1478,6 +1533,10 @@ def main() -> None:
             config = interactive_configure()
             save_config(config, args.output)
             print(f"Configuration saved to {args.output}")
+            return
+
+        if args.command == "identity":
+            _identity_command(args)
             return
 
         if args.command == "run":

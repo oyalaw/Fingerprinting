@@ -122,6 +122,8 @@ def device_preflight(config: Dict[str, Any]) -> List[str]:
     host = campaign.get("expected_host")
     if host and host != socket.gethostname():
         problems.append(f"planned for host {host} but this host is {socket.gethostname()}")
+    from .node_identity import identity_mismatches
+    problems.extend(identity_mismatches(config))
     if campaign.get("require_clock_sync") and clock_status().get("synchronized") is False:
         problems.append("system clock is not synchronized (NTP/chrony/w32tm)")
     return problems
