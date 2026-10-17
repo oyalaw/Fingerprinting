@@ -24,10 +24,16 @@ def run(config: Dict[str, Any]) -> None:
     materialize_role_metadata(config)
     write_role_status(config, "RUNNING")
     try:
+        flower = (
+            str(config.get("federated", {}).get("fl_framework", "custom_fedavg_tcp")) == "flower"
+            and config.get("execution", {}).get("deployment") == "federated"
+        )
+        if flower:
+            from .flower_backend import FlowerClient, FlowerServer
         if role == "server":
-            ExperimentServer(config).serve_forever()
+            (FlowerServer if flower else ExperimentServer)(config).serve_forever()
         elif role == "client":
-            ExperimentClient(config).run()
+            (FlowerClient if flower else ExperimentClient)(config).run()
         else:
             raise ValueError(f"Unsupported role: {role}")
     except KeyboardInterrupt:

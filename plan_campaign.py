@@ -160,6 +160,8 @@ def main():
     ap.add_argument("--large-mb", type=float, default=50.0)
     ap.add_argument("--payload-table", default="fingerprinting_results/variant_per_model.csv")
     ap.add_argument("--transport", choices=("tcp", "tls"), default="tcp")
+    ap.add_argument("--fl-framework", default="custom_fedavg_tcp", choices=registry.fl_frameworks(),
+                    help="federated.fl_framework for every run (only implemented ones are accepted)")
     ap.add_argument("--holdout-per-family", type=int, default=2)
     ap.add_argument("--seed", type=int, default=2027)
     ap.add_argument("--results-root", default="experiments/results")
@@ -173,6 +175,8 @@ def main():
         sys.exit("federated.mode full_scale requires at least 100 rounds (ai_fingerprint/config.py:511); "
                  "lower that limit there first if shorter runs are intended")
     hosts = dict(h.split("=", 1) for h in a.hosts)
+    if not registry.fl_framework_implemented(a.fl_framework):
+        sys.exit(f"--fl-framework {a.fl_framework} is listed but not implemented yet")
     rng = random.Random(a.seed)
     out = Path(a.out_dir)
     if out.exists() and any(out.iterdir()):
@@ -238,7 +242,7 @@ def main():
             part = c["data"].setdefault("partition", {})
             part.update({"seed": part_seed, "client_count": 3})
             fed = c["federated"]
-            fed.update({"rounds": rounds, "expected_clients": 3,
+            fed.update({"rounds": rounds, "expected_clients": 3, "fl_framework": a.fl_framework,
                         "policy_applied": False, "policy_id": None})
             c["transport"]["kind"] = a.transport
             if a.transport == "tls" and role == "server":
@@ -254,7 +258,7 @@ def main():
                 c["campaign"]["expected_host"] = hosts[role]
             with open(run_dir / f"{role}.yaml", "w", encoding="utf-8") as f:
                 yaml.safe_dump(c, f, sort_keys=False)
-        rows.append({"order": i, "repeat": rep + 1, "family": ai["family"], "architecture": ai["architecture"],
+        rows.append({"order": i, "repeat": rep + 1, "fl_framework": a.fl_framework, "family": ai["family"], "architecture": ai["architecture"],
                      "variant": v, "application": app, "dataset": ds, "rounds": rounds,
                      "partition_seed": part_seed, "experiment": exp, "branch": rel,
                      "payload_mb": "" if mb is None else round(mb, 2),
@@ -265,7 +269,7 @@ def main():
     with open(out / "schedule.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader(); w.writerows(rows)
-    json.dump({"seed": a.seed, "repeats": a.repeats, "rounds": a.rounds, "rounds_large": a.rounds_large,
+    json.dump({"seed": a.seed, "repeats": a.repeats, "fl_framework": a.fl_framework, "rounds": a.rounds, "rounds_large": a.rounds_large,
                "large_mb": a.large_mb, "transport": a.transport,
                "cross_family_datasets": a.cross_family_datasets, "reference_run": a.reference_run,
                "devices": {r: templates[r]["device"] for r in ROLES},
