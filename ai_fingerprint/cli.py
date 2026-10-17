@@ -10,6 +10,7 @@ from . import registry
 from .capture import run_capture
 from .config import (
     DEFAULT_CONFIG,
+    FULL_SCALE_MIN_ROUNDS,
     ConfigError,
     generate_experiment_id,
     load_config,
@@ -707,11 +708,11 @@ def interactive_configure(
             config["federated"]["mode"] = run_mode
             if run_mode == "full_scale":
                 config["federated"]["rounds"] = ask_int_min(
-                    "Federated rounds", 100, 100
+                    "Federated rounds", FULL_SCALE_MIN_ROUNDS, FULL_SCALE_MIN_ROUNDS
                 )
             else:
                 config["federated"]["rounds"] = ask_int_range(
-                    "Federated smoke-test rounds", 10, 1, 99
+                    "Federated smoke-test rounds", 10, 1, FULL_SCALE_MIN_ROUNDS - 1
                 )
             config["federated"]["local_epochs"] = ask_int(
                 "Local epochs per round",

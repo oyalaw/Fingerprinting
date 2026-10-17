@@ -7,6 +7,8 @@ from typing import Any, Dict
 
 import yaml
 
+from .config import FULL_SCALE_MIN_ROUNDS
+
 
 POLICY_VERSION = "1.3"
 
@@ -34,7 +36,7 @@ def build_training_policy(config: Dict[str, Any]) -> Dict[str, Any]:
     # Backward compatibility for programmatic smoke tests that historically
     # changed only rounds. The normal runner calls validate_config first, where
     # an explicitly invalid full_scale value is still rejected.
-    effective_mode = "smoke_test" if rounds < 100 else requested_mode
+    effective_mode = "smoke_test" if rounds < FULL_SCALE_MIN_ROUNDS else requested_mode
     core = {
         "policy_version": POLICY_VERSION,
         "experiment_id": experiment_id,
@@ -98,10 +100,10 @@ def validate_training_policy(
             raise FederatedPolicyError(f"Federated training policy {field} must be positive")
 
     rounds = int(policy["rounds"])
-    if mode == "full_scale" and rounds < 100:
-        raise FederatedPolicyError("full_scale policy requires at least 100 rounds")
-    if mode == "smoke_test" and rounds > 99:
-        raise FederatedPolicyError("smoke_test policy requires 1 to 99 rounds")
+    if mode == "full_scale" and rounds < FULL_SCALE_MIN_ROUNDS:
+        raise FederatedPolicyError(f"full_scale policy requires at least {FULL_SCALE_MIN_ROUNDS} rounds")
+    if mode == "smoke_test" and rounds >= FULL_SCALE_MIN_ROUNDS:
+        raise FederatedPolicyError(f"smoke_test policy requires 1 to {FULL_SCALE_MIN_ROUNDS - 1} rounds")
 
     try:
         learning_rate = float(policy["learning_rate"])

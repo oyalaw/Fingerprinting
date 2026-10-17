@@ -15,6 +15,11 @@ class ConfigError(ValueError):
     pass
 
 
+# Minimum global rounds of a full_scale (publication) run. Per-trace features are medians and
+# spreads over rounds, which are stable to about 1% after 50 rounds (100 vs first 50 rounds of
+# the collected runs), and every round carries the same model size.
+FULL_SCALE_MIN_ROUNDS = 50
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "experiment": {
         "experiment_id": "auto",
@@ -105,8 +110,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "learning_rate": 0.001,
     },
     "federated": {
-        # full_scale enforces publication-scale runs of at least 100 global rounds.
-        # smoke_test is intentionally restricted to 1..99 rounds for debugging.
+        # full_scale enforces publication-scale runs of at least
+        # FULL_SCALE_MIN_ROUNDS global rounds; smoke_test is restricted to fewer
+        # rounds, for debugging.
         "mode": "full_scale",
         "rounds": 100,
         "local_epochs": 1,
@@ -511,10 +517,14 @@ def validate_config(config: Dict[str, Any]) -> None:
             raise ConfigError("federated.mode must be full_scale or smoke_test")
         if rounds <= 0:
             raise ConfigError("federated.rounds must be positive")
-        if mode == "full_scale" and rounds < 100:
-            raise ConfigError("full_scale federated experiments require at least 100 rounds")
-        if mode == "smoke_test" and rounds > 99:
-            raise ConfigError("smoke_test federated experiments must use 1 to 99 rounds")
+        if mode == "full_scale" and rounds < FULL_SCALE_MIN_ROUNDS:
+            raise ConfigError(
+                f"full_scale federated experiments require at least {FULL_SCALE_MIN_ROUNDS} rounds"
+            )
+        if mode == "smoke_test" and rounds >= FULL_SCALE_MIN_ROUNDS:
+            raise ConfigError(
+                f"smoke_test federated experiments must use 1 to {FULL_SCALE_MIN_ROUNDS - 1} rounds"
+            )
         if int(federated.get("local_epochs", 0)) <= 0:
             raise ConfigError("federated.local_epochs must be positive")
         if int(federated.get("steps_per_epoch", 0)) <= 0:

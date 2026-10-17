@@ -28,14 +28,16 @@ def test_fullscale_and_smoke_round_policy(tmp_path):
     full = _federated_config(tmp_path / "full")
     full["federated"].update({"mode": "full_scale", "rounds": 100})
     validate_config(full)
-    full["federated"]["rounds"] = 99
+    full["federated"]["rounds"] = 50  # FULL_SCALE_MIN_ROUNDS
+    validate_config(full)
+    full["federated"]["rounds"] = 49
     with pytest.raises(ConfigError):
         validate_config(full)
 
     smoke = _federated_config(tmp_path / "smoke")
     smoke["federated"].update({"mode": "smoke_test", "rounds": 10})
     validate_config(smoke)
-    smoke["federated"]["rounds"] = 100
+    smoke["federated"]["rounds"] = 50
     with pytest.raises(ConfigError):
         validate_config(smoke)
 

@@ -18,7 +18,7 @@ What the plan enforces
                  confounded with the dataset
   * rounds       --rounds for all models, --rounds-large for models whose payload exceeds
                  --large-mb (large uploads over Wi-Fi make 100 rounds last more than a day);
-                 values below 100 need the full_scale limit in ai_fingerprint/config.py lowered
+                 the minimum is FULL_SCALE_MIN_ROUNDS (50) in ai_fingerprint/config.py
   * held out     --holdout-per-family models are drawn (seeded) before any data is collected
                  and written to plan.json, so the test split is fixed in advance
   * numbering    experiment numbers continue after the highest expN already collected for each
@@ -43,6 +43,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ai_fingerprint import registry
+from ai_fingerprint.config import FULL_SCALE_MIN_ROUNDS
 from ai_fingerprint.dataset_catalog import get_dataset_spec
 from ai_fingerprint.experiment_layout import apply_hierarchical_layout, branch_directory
 
@@ -60,9 +61,17 @@ def load_yaml(p):
         return yaml.safe_load(f)
 
 
+def run_dirs(root):
+    """Collected runs directly under root or one folder down (e.g. collected_experiments/old)."""
+    found = glob.glob(os.path.join(root, "run_*")) + glob.glob(os.path.join(root, "*", "run_*"))
+    return sorted(p for p in found if os.path.isdir(p))
+
+
 def collected_server_configs(root):
     out = []
-    for p in sorted(glob.glob(os.path.join(root, "run_*", "server", "config.yaml"))):
+    for p in (os.path.join(r, "server", "config.yaml") for r in run_dirs(root)):
+        if not os.path.exists(p):
+            continue
         try:
             out.append((p, load_yaml(p)))
         except Exception:
@@ -128,7 +137,9 @@ def used_experiment_numbers(servers):
 def round_minutes(collected):
     """Median minutes per FL round for each collected variant (server round_metrics timestamps)."""
     out = {}
-    for p in glob.glob(os.path.join(collected, "run_*", "client_1", "round_metrics.csv")):
+    for p in (os.path.join(r, "client_1", "round_metrics.csv") for r in run_dirs(collected)):
+        if not os.path.exists(p):
+            continue
         try:
             import pandas as pd
             r = pd.read_csv(p, usecols=["variant", "timestamp_start_utc", "timestamp_end_utc"])
@@ -155,8 +166,8 @@ def main():
     ap.add_argument("--exclude", nargs="*", default=[])
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--cross-family-datasets", action="store_true")
-    ap.add_argument("--rounds", type=int, default=100)
-    ap.add_argument("--rounds-large", type=int, default=100)
+    ap.add_argument("--rounds", type=int, default=FULL_SCALE_MIN_ROUNDS)
+    ap.add_argument("--rounds-large", type=int, default=FULL_SCALE_MIN_ROUNDS)
     ap.add_argument("--large-mb", type=float, default=50.0)
     ap.add_argument("--payload-table", default="fingerprinting_results/variant_per_model.csv")
     ap.add_argument("--transport", choices=("tcp", "tls"), default="tls",
@@ -176,9 +187,9 @@ def main():
                     help="expected hostname per role, e.g. client_1=jetson-nano; roles refuse to start elsewhere")
     a = ap.parse_args()
 
-    if min(a.rounds, a.rounds_large) < 100:
-        sys.exit("federated.mode full_scale requires at least 100 rounds (ai_fingerprint/config.py:511); "
-                 "lower that limit there first if shorter runs are intended")
+    if min(a.rounds, a.rounds_large) < FULL_SCALE_MIN_ROUNDS:
+        sys.exit(f"full_scale runs need at least {FULL_SCALE_MIN_ROUNDS} rounds "
+                 "(FULL_SCALE_MIN_ROUNDS in ai_fingerprint/config.py)")
     hosts = dict(h.split("=", 1) for h in a.hosts)
     for item in a.device:
         role, label = item.split("=", 1)
@@ -191,7 +202,9 @@ def main():
     if out.exists() and any(out.iterdir()):
         sys.exit(f"{out} exists and is not empty; choose a new --out-dir")
     servers = collected_server_configs(a.collected)
-    ref = Path(a.collected) / a.reference_run
+    ref = next((Path(r) for r in run_dirs(a.collected) if os.path.basename(r) == a.reference_run), None)
+    if ref is None:
+        sys.exit(f"reference run {a.reference_run} not found under {a.collected}")
     templates = {r: load_yaml(ref / r / "config.yaml") for r in ROLES}
     for item in a.device:
         role, label = item.split("=", 1)
