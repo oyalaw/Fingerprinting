@@ -1345,6 +1345,15 @@ def build_parser() -> argparse.ArgumentParser:
     identity_parser.add_argument("--os", dest="operating_system", choices=registry.OPERATING_SYSTEMS)
     identity_parser.add_argument("--show", action="store_true", help="print the saved identity and exit")
 
+    tls_parser = subparsers.add_parser(
+        "tls-provision",
+        help="Create the testbed CA and server certificate used by default for encrypted transport",
+    )
+    tls_parser.add_argument("--out", default="tls")
+    tls_parser.add_argument("--hosts", nargs="+", required=True,
+                            help="server and proxy addresses clients connect to, e.g. 10.42.0.195 10.42.0.1")
+    tls_parser.add_argument("--days", type=int, default=825)
+
     flare_parser = subparsers.add_parser(
         "flare-provision",
         help="Provision NVIDIA FLARE startup kits for the testbed (clients connect via the proxy)",
@@ -1563,6 +1572,15 @@ def main() -> None:
             config = interactive_configure()
             save_config(config, args.output)
             print(f"Configuration saved to {args.output}")
+            return
+
+        if args.command == "tls-provision":
+            from .tls import provision_testbed_tls
+            paths = provision_testbed_tls(args.out, list(args.hosts) + ["localhost", "127.0.0.1"],
+                                          days=args.days)
+            print(f"Created {paths['ca']}, {paths['cert']} and {paths['key']}. Copy ca.pem, server.pem "
+                  f"and server.key to {args.out}/ in the repository on every machine; keep "
+                  f"{paths['ca_key']} private.")
             return
 
         if args.command == "flare-provision":

@@ -159,7 +159,8 @@ def main():
     ap.add_argument("--rounds-large", type=int, default=100)
     ap.add_argument("--large-mb", type=float, default=50.0)
     ap.add_argument("--payload-table", default="fingerprinting_results/variant_per_model.csv")
-    ap.add_argument("--transport", choices=("tcp", "tls"), default="tcp")
+    ap.add_argument("--transport", choices=("tcp", "tls"), default="tls",
+                    help="tls (default) uses the testbed certificates in tls/ from `main.py tls-provision`")
     ap.add_argument("--fl-framework", default="custom_fedavg_tcp", choices=registry.fl_frameworks(),
                     help="federated.fl_framework for every run (only implemented ones are accepted)")
     ap.add_argument("--flare-kits", default="flare_kits/aifp/prod_00",
@@ -249,8 +250,11 @@ def main():
             if a.fl_framework == "nvidia_flare":
                 fed["flare"] = {"kits_dir": a.flare_kits}
             c["transport"]["kind"] = a.transport
-            if a.transport == "tls" and role == "server":
-                c["transport"]["auto_generate_self_signed"] = True
+            if a.transport == "tls":
+                c["transport"].update({"certfile": "tls/server.pem", "keyfile": "tls/server.key",
+                                       "cafile": "tls/ca.pem", "verify_peer": True,
+                                       "server_hostname": "ai-fingerprint-server",
+                                       "auto_generate_self_signed": True})
             c["experiment"]["run_id"] = None          # the server generates it at start-up
             c["experiment"]["existing_output_policy"] = "error"
             apply_hierarchical_layout(c, root=a.results_root, experiment_id=exp,

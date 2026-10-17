@@ -80,6 +80,12 @@ class ExperimentClient:
             return sock
 
         verify_peer = bool(transport.get("verify_peer"))
+        cafile = transport.get("cafile")
+        if verify_peer and cafile and not Path(cafile).exists():
+            # Testbed CA not provisioned here: keep the connection encrypted, but unverified.
+            print(f"[tls] {cafile} not found; encrypting without verifying the server "
+                  "(run `main.py tls-provision` and copy tls/ for verified TLS)")
+            verify_peer = False
         if verify_peer:
             context = ssl.create_default_context(
                 cafile=transport.get("cafile")

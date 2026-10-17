@@ -74,8 +74,12 @@ def _certificates(config: Dict[str, Any]) -> Optional[Tuple[bytes, bytes, bytes]
     if str(t.get("kind", "tcp")).lower() != "tls":
         return None
     paths = [t.get("cafile"), t.get("certfile"), t.get("keyfile")]
-    if not all(paths):
-        raise RuntimeError("Flower over TLS needs transport.cafile, certfile and keyfile")
+    missing = [p for p in paths if not p or not Path(p).exists()]
+    if missing:
+        raise RuntimeError(
+            "Flower over TLS needs the testbed certificates (transport.cafile, certfile, keyfile); "
+            f"missing: {missing}. Run `main.py tls-provision` and copy tls/ to every machine, "
+            "or set transport.kind: tcp to run unencrypted.")
     return tuple(Path(p).read_bytes() for p in paths)  # type: ignore[return-value]
 
 

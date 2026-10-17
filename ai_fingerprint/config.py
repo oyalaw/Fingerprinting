@@ -36,15 +36,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "port": 8081,
     },
     "transport": {
-        # Kept as tcp for backward-compatible scripted configs. The
-        # interactive remote/federated workflow now offers TLS first.
-        "kind": "tcp",
-        "certfile": None,
-        "keyfile": None,
-        "cafile": None,
-        "verify_peer": False,
-        "server_hostname": None,
-        "auto_generate_self_signed": False,
+        # Encrypted by default. The testbed certificates come from
+        # `main.py tls-provision` (copied to tls/ on every machine); if they are
+        # missing, the server generates a self-signed certificate and clients
+        # encrypt without verifying it. Older configs that say tcp are unchanged.
+        "kind": "tls",
+        "certfile": "tls/server.pem",
+        "keyfile": "tls/server.key",
+        "cafile": "tls/ca.pem",
+        "verify_peer": True,
+        "server_hostname": "ai-fingerprint-server",
+        "auto_generate_self_signed": True,
         "self_signed_common_name": "ai-fingerprint-server",
         "self_signed_valid_days": 30,
         "minimum_tls_version": "TLSv1_2",
