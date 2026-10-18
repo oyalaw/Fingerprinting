@@ -1388,6 +1388,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Path to label-blind proxy YAML configuration",
     )
+    proxy_parser.add_argument(
+        "--wait-for-run",
+        action="store_true",
+        help=(
+            "Wait for the FL server's coordinator and use its active run ID for this "
+            "proxy's output (so one proxy config can be reused for every run)"
+        ),
+    )
 
     capture = subparsers.add_parser(
         "capture",
@@ -1603,6 +1611,18 @@ def main() -> None:
 
         if args.command == "proxy":
             config = load_proxy_config(args.config)
+            if args.wait_for_run:
+                coordination = config.setdefault("coordination", {})
+                host = str(coordination.get("server_host") or config["proxy"]["upstream_host"])
+                port = int(coordination.get("server_port", 8081))
+                print(f"[proxy] waiting for the active run at {host}:{port} ...")
+                active_run = wait_for_active_run(host, port)
+                apply_proxy_staging_layout(
+                    config,
+                    staging_root=str(config.get("experiment", {}).get("results_root", "experiments/staging")),
+                    run_id=active_run.run_id,
+                )
+                print(f"[proxy] active run {active_run.run_id}; output {config['experiment']['output_dir']}")
             _run_proxy_with_status(config)
             return
 
