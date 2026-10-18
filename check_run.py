@@ -133,8 +133,12 @@ def check(run_dir, a, plan_dev):
         if 0 < missing and len(Rr) >= R * a.min_round_frac:
             add(f"all rounds {cid}", "warn", False, f"{missing} rounds not rebuilt")
         if len(Rr) and np.isfinite(gt_payload) and gt_payload > 0:
-            err = abs(Rr["up_bytes"].median() - gt_payload) / gt_payload
-            add(f"payload {cid}", "warn", err <= a.payload_tol, f"{100 * err:.3f}% from logged model size")
+            diff = abs(Rr["up_bytes"].median() - gt_payload)
+            err = diff / gt_payload
+            # Each upload also carries the protocol's message header and TLS framing (~2 KB,
+            # fixed), so allow --payload-overhead bytes on top of the relative tolerance.
+            ok = diff <= a.payload_tol * gt_payload + a.payload_overhead
+            add(f"payload {cid}", "warn", ok, f"{100 * err:.3f}% (+{int(diff)} B) from logged model size")
     for c in CLIENTS:
         if c not in found:
             add(f"trace {c}", "fail", False, "no proxy trace mapped to this client")
@@ -149,6 +153,8 @@ def main():
     ap.add_argument("--min-round-frac", type=float, default=0.95,
                     help="FAIL if fewer than this share of planned rounds is rebuilt for a client")
     ap.add_argument("--payload-tol", type=float, default=0.01)
+    ap.add_argument("--payload-overhead", type=int, default=8192,
+                    help="fixed bytes per upload allowed for message header and TLS framing")
     ap.add_argument("--max-drop-frac", type=float, default=0.001,
                     help="FAIL if the proxy capture dropped more than this share of packets (WARN for any drop)")
     ap.add_argument("--report", help="append one row per check to this CSV")

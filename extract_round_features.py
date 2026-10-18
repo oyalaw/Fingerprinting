@@ -159,7 +159,11 @@ def model_transfers(T, up):
     b = np.sort(x["bytes"].to_numpy())
     cum = np.cumsum(b)
     ref = b[np.searchsorted(cum, cum[-1] / 2)]
-    return x[(x["bytes"] >= 0.8 * ref) & (x["bytes"] <= 1.2 * ref)]
+    # Allow a small fixed extra above the band: the first download also carries the server's
+    # training policy (a few KB), which for tiny models (~10 KB) exceeds 20% and would drop
+    # round 0. Capped at half a model so two merged model transfers are still rejected.
+    slack = min(8192.0, 0.5 * ref)
+    return x[(x["bytes"] >= 0.8 * ref) & (x["bytes"] <= 1.2 * ref + slack)]
 
 
 def rounds_for_trace(d):
