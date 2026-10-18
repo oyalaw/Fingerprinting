@@ -36,6 +36,28 @@ python3 main.py identity                  # once: role, client ID, device, OS (m
 
 Copy `tls/ca.pem` from the DGX into `tls/` in the repository (the DGX keeps all of `tls/`).
 
+### Datasets offline (server and every client)
+
+Copy the DGX's `datasets/` folder (about 0.5 GB: Fashion-MNIST, CIFAR-10, UCI-HAR, AG News,
+IMDB) into the repository on each machine, so no run downloads data. A dataset downloaded
+during a run delays the server, and the clients' TLS handshake times out.
+
+If the hotspot has no internet, tell Hugging Face to use only the local cache. Without this,
+the AG News / IMDB loader contacts huggingface.co even for cached data and the client hangs
+on retries. Set it in the shell that starts each role, or permanently:
+
+```bash
+# Linux (Jetson, desktop, DGX, proxy laptop): add to ~/.bashrc
+export HF_DATASETS_OFFLINE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+```
+
+```powershell
+# Windows laptop (PowerShell, once; applies to new windows)
+setx HF_DATASETS_OFFLINE 1; setx HF_HUB_OFFLINE 1; setx TRANSFORMERS_OFFLINE 1
+```
+
+Unset them (or open a shell without them) only when you need to download a new dataset.
+
 ## 2. DGX (server)
 
 ```bash
