@@ -99,6 +99,27 @@ def _local_ip_towards(host: str, port: int) -> Optional[str]:
         return None
 
 
+def adopt_active_run_id(config: Dict[str, Any], attempts: int = 60) -> Optional[str]:
+    """Take the server's active run ID from its coordinator, as the custom client gets it from
+    the server's policy. Without it the client's results cannot be filed under the run."""
+    from .experiment_coordination import query_active_run
+
+    exp = config.setdefault("experiment", {})
+    if exp.get("run_id"):
+        return exp["run_id"]
+    coord = config.get("coordination", {}) or {}
+    if not bool(coord.get("enabled", True)) or not coord.get("host"):
+        return None
+    for _ in range(attempts):
+        try:
+            exp["run_id"] = query_active_run(str(coord["host"]), int(coord.get("port", 8081))).run_id
+            return exp["run_id"]
+        except Exception:
+            time.sleep(2)
+    print("[client] WARNING: no active run ID from the coordinator; results will not be collected")
+    return None
+
+
 def _labels(config: Dict[str, Any], fl_framework: str = "flower") -> Dict[str, Any]:
     ai, fed = config["ai"], config["federated"]
     return {"experiment_id": config["experiment"]["experiment_id"], "family": ai["family"],
@@ -201,6 +222,7 @@ class FlowerClient:
         part["client_id"] = client_id
         if part.get("seed") is None:
             part["seed"] = int(cfg.get("execution", {}).get("seed", 42))
+        adopt_active_run_id(cfg)
         materialize_role_metadata(cfg)
         self.logger.refresh_base(cfg)
 

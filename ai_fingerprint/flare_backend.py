@@ -250,6 +250,8 @@ class FlareClient:
         kit = _kits_dir(cfg) / client_id
         if not kit.is_dir():
             raise RuntimeError(f"no FLARE startup kit for {client_id} in {kit.parent}")
+        from .flower_backend import adopt_active_run_id
+        adopt_active_run_id(cfg)
         materialize_role_metadata(cfg)
         self.logger.refresh_base(cfg)
         role_cfg = _effective_config(cfg)
