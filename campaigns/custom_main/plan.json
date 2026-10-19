@@ -1,0 +1,83 @@
+{
+  "seed": 2027,
+  "repeats": 3,
+  "fl_framework": "custom_fedavg_tcp",
+  "rounds": 50,
+  "rounds_large": 50,
+  "large_mb": 50.0,
+  "transport": "tls",
+  "cross_family_datasets": false,
+  "reference_run": "run_20260907t220204z_e367861f",
+  "devices": {
+    "server": {
+      "label": "jetson_agx_orin",
+      "operating_system": "ubuntu"
+    },
+    "client_1": {
+      "label": "jetson_orin_nano",
+      "operating_system": "ubuntu"
+    },
+    "client_2": {
+      "label": "dell_desktop",
+      "operating_system": "ubuntu"
+    },
+    "client_3": {
+      "label": "dell_laptop",
+      "operating_system": "windows_11"
+    }
+  },
+  "variants": [
+    "bert_base",
+    "bert_mini",
+    "bert_small",
+    "bert_tiny",
+    "bigru_2layer",
+    "bilstm_2layer",
+    "convolutional_autoencoder_2layer",
+    "convolutional_autoencoder_4layer",
+    "convolutional_autoencoder_6layer",
+    "dense_autoencoder_2layer",
+    "dense_autoencoder_3layer",
+    "dense_autoencoder_5layer",
+    "distilbert_2layer",
+    "distilbert_4layer",
+    "distilbert_base",
+    "efficientnet_b0",
+    "efficientnet_b1",
+    "efficientnet_b2",
+    "gru_1layer",
+    "gru_2layer",
+    "lstm_1layer",
+    "lstm_2layer",
+    "mobilenet_v2",
+    "mobilenet_v3_small",
+    "resnet101",
+    "resnet18",
+    "resnet34",
+    "resnet50",
+    "tiny_transformer_2layer",
+    "tiny_transformer_4layer",
+    "tiny_transformer_6layer",
+    "vae_conv",
+    "vae_fc"
+  ],
+  "held_out": {
+    "autoencoder": [
+      "convolutional_autoencoder_4layer",
+      "dense_autoencoder_2layer"
+    ],
+    "cnn": [
+      "efficientnet_b0",
+      "efficientnet_b1"
+    ],
+    "rnn": [
+      "gru_1layer",
+      "lstm_2layer"
+    ],
+    "transformer": [
+      "bert_small",
+      "distilbert_base"
+    ]
+  },
+  "runs": 99
+}
