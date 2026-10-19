@@ -54,8 +54,11 @@ def _require_flare():
 # ---------------------------------------------------------------- provisioning
 def project_yaml(name: str, server_host: str, fl_port: int, admin_port: int, proxy_host: str,
                  proxy_port: int, clients: List[str], security: str) -> Dict[str, Any]:
+    # clients reach the server through the proxy's TCP relay, so the server certificate must also
+    # name the proxy host, or the clients' TLS hostname check fails and they never register
+    host_names = list(dict.fromkeys([server_host, proxy_host, "localhost"]))
     server = {"name": SERVER_NAME, "type": "server", "org": "lab", "fed_learn_port": fl_port,
-              "admin_port": admin_port, "default_host": server_host, "host_names": [server_host, "localhost"],
+              "admin_port": admin_port, "default_host": server_host, "host_names": host_names,
               "connection_security": security}
     parts = [server]
     for c in clients:
@@ -107,12 +110,17 @@ def _kits_dir(config: Dict[str, Any]) -> Path:
 
 
 def _effective_config(config: Dict[str, Any]) -> Path:
-    """Role config with an absolute output folder, read by the job processes FLARE spawns."""
+    """Role config with absolute output and dataset folders, read by the job processes FLARE spawns."""
     cfg = dict(config)
     cfg["experiment"] = dict(config["experiment"])
     out = Path(config["experiment"]["output_dir"]).resolve()
     out.mkdir(parents=True, exist_ok=True)
     cfg["experiment"]["output_dir"] = str(out)
+    # FLARE runs the job from the site's workspace, so a relative dataset folder would point
+    # inside the startup kit and the client would try to download the data again
+    if config.get("data", {}).get("root"):
+        cfg["data"] = dict(config["data"])
+        cfg["data"]["root"] = str(Path(config["data"]["root"]).resolve())
     path = out / "flare_role_config.yaml"
     path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     return path

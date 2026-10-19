@@ -117,7 +117,9 @@ def check(run_dir, a, plan_dev):
     for p in seqs:
         by_trace.setdefault(re.search(r"__(trace_\d+)_fingerprint_sequence", p).group(1), []).append(p)
     ipmap, cmap = trace_ips(run_dir), client_map(run_dir)
-    found = {}
+    # a client can open several connections (FLARE: the client daemon and a separate job process);
+    # judge each client by the trace that carries its model transfers
+    best = {}
     for tid, paths in sorted(by_trace.items()):
         cid, _, _, gt_payload = cmap.get(ipmap.get(tid), (None, None, np.nan, np.nan))
         if cid is None:
@@ -125,7 +127,14 @@ def check(run_dir, a, plan_dev):
         try:
             Rr = rounds_for_trace(load_trace(paths))
         except Exception as e:
-            add(f"rounds {cid}", "fail", False, f"{type(e).__name__}: {e}")
+            best.setdefault(cid, (None, gt_payload, f"{type(e).__name__}: {e}"))
+            continue
+        if best.get(cid, (None,))[0] is None or len(Rr) > len(best[cid][0]):
+            best[cid] = (Rr, gt_payload, None)
+    found = {}
+    for cid, (Rr, gt_payload, error) in sorted(best.items()):
+        if Rr is None:
+            add(f"rounds {cid}", "fail", False, error)
             continue
         found[cid] = len(Rr)
         missing = R - len(Rr)
