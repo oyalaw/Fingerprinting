@@ -24,6 +24,7 @@ GROUND_TRUTH_LABEL_FIELDS = [
     "variant",
     "application",
     "device",
+    "fl_framework",
 ]
 
 OPTIONAL_CONTEXT_LABEL_FIELDS = [
@@ -104,6 +105,7 @@ SAFE_SEQUENCE_FIELDS = SAFE_SEQUENCE_BASE_FIELDS + EXTENDED_SEQUENCE_FIELDS
 # Exact fields that must never appear in attacker predictor input.
 FORBIDDEN_PREDICTOR_FIELDS = {
     "role",
+    "fl_framework",
     "event",
     "timestamp_utc",
     "framework",
@@ -435,6 +437,11 @@ def _read_ground_truth_indices(
                         shared_values[experiment_id][field].add(
                             json.dumps(value, sort_keys=True)
                         )
+                fl_framework = record.get("fl_framework")
+                if fl_framework:
+                    shared_values[experiment_id]["fl_framework"].add(
+                        json.dumps(fl_framework, sort_keys=True)
+                    )
 
                 if role == "client":
                     client_id = str(
@@ -494,6 +501,13 @@ def _read_ground_truth_indices(
                     f"{experiment_id!r}/{field!r}: {sorted(choices)}"
                 )
             row[field] = json.loads(next(iter(choices)))
+        # FL framework the run used; records written before it was logged came from the custom backend
+        fl_choices = shared_values[experiment_id].get("fl_framework", set())
+        if len(fl_choices) > 1:
+            raise FingerprintingDataError(
+                f"Conflicting fl_framework values for {experiment_id!r}: {sorted(fl_choices)}"
+            )
+        row["fl_framework"] = json.loads(next(iter(fl_choices))) if fl_choices else "custom_fedavg_tcp"
         shared_resolved[experiment_id] = row
 
     experiment_labels: Dict[str, Dict[str, Any]] = {}
