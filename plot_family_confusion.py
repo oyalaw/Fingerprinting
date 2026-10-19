@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Family confusion matrices for the paper (Fig. 2): per-client RF baseline vs cross-device LR,
+Family confusion matrices for the paper (Fig. 2): single-client RF baseline (no shared
+cross-device ratios) vs cross-device LR,
 both leave-one-model-out with nested selection, on the header-corrected features.
 Sized for one IEEE column (3.5 in), no suptitle, fonts readable at print size.
 
@@ -19,6 +20,8 @@ from sklearn.metrics import balanced_accuracy_score, confusion_matrix
 from ablation_family import per_client, cross_device, nested_lomo
 
 FAM = ["autoencoder", "cnn", "rnn", "transformer"]
+# run-level cross-device ratios, shared by the three clients; excluded from the single-client baseline
+RATIOS = ("ct_gapratio_jet", "ct_gapratio_lap", "ct_tputratio_jet", "ct_tputratio_lap")
 TICK = ["AE", "CNN", "RNN", "TF"]
 
 
@@ -27,8 +30,9 @@ def predictions(x, y, cache):
         return pd.read_csv(cache)
     ov, feats = per_client(x, y)
     out = []
-    pred = nested_lomo(ov[feats].values.astype(float), ov["family"].values, ov["model"].values, "rf")
-    out.append(pd.DataFrame({"method": "per-client RF", "y_true": ov["family"].values, "y_pred": pred}))
+    single = [f for f in feats if f not in RATIOS]
+    pred = nested_lomo(ov[single].values.astype(float), ov["family"].values, ov["model"].values, "rf")
+    out.append(pd.DataFrame({"method": "single-client RF", "y_true": ov["family"].values, "y_pred": pred}))
     P, fc = cross_device(ov, feats)
     pred = nested_lomo(P[fc].values.astype(float), P["family"].values, P["model"].values, "lr")
     out.append(pd.DataFrame({"method": "cross-device LR", "y_true": P["family"].values, "y_pred": pred}))
@@ -65,13 +69,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--x", default="fingerprinting_dataset/fingerprinting_X_proxy_compute3.csv")
     ap.add_argument("--y", default="fingerprinting_dataset/fingerprinting_Y_ground_truth.csv")
-    ap.add_argument("--cache", default="fingerprinting_results/fix_ablation/family_lomo_predictions.csv")
+    ap.add_argument("--cache", default="fingerprinting_results/ratio_checks/family_lomo_predictions_single_client.csv")
     ap.add_argument("--out", default="paper_build/fig_family_before_after.pdf")
     a = ap.parse_args()
     R = predictions(a.x, a.y, a.cache)
     plt.rcParams["font.family"] = "serif"
     fig, axes = plt.subplots(1, 2, figsize=(3.5, 2.0))
-    panel(axes[0], R[R["method"] == "per-client RF"], "(a) Per-client RF", True)
+    panel(axes[0], R[R["method"] == "single-client RF"], "(a) Single-client RF", True)
     panel(axes[1], R[R["method"] == "cross-device LR"], "(b) Cross-device LR", False)
     fig.subplots_adjust(left=0.15, right=0.99, top=0.99, bottom=0.25, wspace=0.12)
     fig.savefig(a.out)

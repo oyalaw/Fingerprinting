@@ -80,66 +80,41 @@ fingerprint evaluation.
 
 \subsection{Fingerprinting Dataset and Ground Truth}
 \label{subsec:dataset}
-The fingerprinting dataset is derived from the proxy captures of all
-experiments and comprises approximately 499 million packets (670~GB, 190~hours
-of traffic; median trace duration 53~min). Table~\ref{tab:fp_dataset}
-summarizes its composition: four families, 11 architectures, and 32 variants,
-each realized by one experiment observed from three clients. Each client trace
-yields one complete-trace observation and a sequence of windows
-(Sec.~\ref{subsec:preprocessing}). Round-level quantities (payload size and
-compute gap) are available for the 90 traces of the 30 experiments whose rounds
-are fully reconstructed. Window counts are imbalanced across families, because
-larger models produce longer traces; training therefore weights every
-experiment equally, and performance is reported as balanced accuracy.
-
-Each observation is described by 68 size-normalized traffic features in seven
-groups: direction and volume ratios (7), transmission rates (6), packet-size
-statistics (20), interarrival-time statistics (12), burst statistics (17), idle
-time (2), and TLS record sizes (4); the latter are constant in this plaintext
-testbed and are discarded by feature selection. Complete-trace observations
-additionally carry nine compute-timing features derived from the round
-structure: the compute gap per transmitted megabyte, its dispersion and spread,
-the ratios of round period to compute gap and of waiting time to round period,
-and cross-device compute-gap and throughput ratios. This yields 77 features per
-client and 231 in the cross-device representation~\eqref{eq:crossdevice}.
+The dataset comprises about 499 million packets (670~GB, 190~hours of traffic)
+from 32 experiments, one per variant, each observed from three clients
+(Table~\ref{tab:fp_dataset}). Each of the 96 client traces yields one
+complete-trace observation and a sequence of windows; round-level quantities
+are available for the 90 traces whose rounds are fully reconstructed. Because
+larger models produce longer traces, training weights every experiment equally.
+Each observation is described by 68 size-normalized features covering direction
+and volume ratios, transmission rates, and packet-size, interarrival, burst, and
+idle statistics. Complete traces add nine compute-timing features derived from
+the round structure, giving 77 features per client and 231 in the cross-device
+representation~\eqref{eq:crossdevice}. Labels and per-model metadata (parameter
+count, serialized size, and training FLOPs per sample) are computed from the
+model source code and are used only for evaluation.
 
 \begin{table}[!htbp]
 \centering
 \caption{Fingerprinting Dataset Composition}
 \label{tab:fp_dataset}
 \scriptsize
-\renewcommand{\arraystretch}{1.08}
-\setlength{\tabcolsep}{3pt}
-\begin{tabular}{lcccccc}
+\renewcommand{\arraystretch}{1.05}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccccc}
 \hline
-\textbf{Family} & \textbf{Arch.} & \textbf{Var.} & \textbf{Exp.} & \textbf{Traces} &
+\textbf{Family} & \textbf{Arch.} & \textbf{Var.} & \textbf{Traces} &
 \textbf{5~s win.} & \textbf{0.5~s win.} \\
 \hline
-Autoencoder & 3  & 9  & 9  & 27 & 7{,}943  & 57{,}786 \\
-CNN         & 3  & 9  & 9  & 27 & 35{,}947 & 298{,}965 \\
-RNN         & 2  & 6  & 6  & 18 & 2{,}578  & 12{,}036 \\
-Transformer & 3  & 8  & 8  & 24 & 39{,}585 & 345{,}817 \\
+Autoencoder & 3  & 9  & 27 & 7{,}943  & 57{,}786 \\
+CNN         & 3  & 9  & 27 & 35{,}947 & 298{,}965 \\
+RNN         & 2  & 6  & 18 & 2{,}578  & 12{,}036 \\
+Transformer & 3  & 8  & 24 & 39{,}585 & 345{,}817 \\
 \hline
-\textbf{Total} & \textbf{11} & \textbf{32} & \textbf{32} & \textbf{96} & \textbf{86{,}053} & \textbf{714{,}604} \\
+\textbf{Total} & \textbf{11} & \textbf{32} & \textbf{96} & \textbf{86{,}053} & \textbf{714{,}604} \\
 \hline
 \end{tabular}
-
-\vspace{2pt}
-\parbox{0.95\columnwidth}{\scriptsize Windows with at least 20 packets. The 1~s
-and 2~s representations contain 381{,}364 and 201{,}174 windows; the
-cross-device representation contains one vector per experiment (32) and
-45{,}559 time-aligned 5~s windows.}
 \end{table}
-
-Ground-truth labels at each level of the hierarchy, together with per-model
-metadata (parameter count, serialized size, and training FLOPs per sample), are
-computed directly from the model source code rather than inferred from traffic,
-and are used solely for evaluation; the classifiers never observe them. Training
-FLOPs are obtained from an operator-level cost model, with an analytic correction
-for recurrent layers whose fused kernels are otherwise uncounted. These labels
-define the supervision and the hierarchy $\mathcal{H}$ of~\eqref{eq:hierarchy},
-and the FLOP estimates support the analysis of architectures whose compute
-profiles yield similar communication patterns.
 
 \subsection{Data Preprocessing}
 \label{subsec:preprocessing}

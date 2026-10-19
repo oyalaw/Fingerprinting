@@ -392,8 +392,28 @@ def experiment_balanced_accuracy(
     return float(np.mean(values)) if values else float("nan")
 
 
+_COMPTYPE_BY_ARCH = {
+    "convolutional_autoencoder": "convolutional",
+    "variational_autoencoder": "convolutional",   # beta_vae, vae_conv; vae_fc overridden below
+    "efficientnet": "convolutional", "mobilenet": "convolutional", "resnet": "convolutional",
+    "dense_autoencoder": "dense",
+    "gru": "recurrent", "lstm": "recurrent",
+    "bert": "attention", "distilbert": "attention", "tiny_transformer": "attention",
+}
+
+
+def computation_type(architecture: str, variant: str) -> str:
+    """Computation type from the model's layers, independent of application family: convolutional,
+    recurrent, attention or dense. Determined by architecture, with vae_fc (a fully-connected VAE)
+    the one variant-level exception."""
+    if str(variant).strip() == "vae_fc":
+        return "dense"
+    return _COMPTYPE_BY_ARCH.get(str(architecture).strip(), "dense")
+
+
 def stage_definitions(rows: list[dict[str, Any]]):
     yield "family", "all", rows, "_family"
+    yield "comptype", "all", rows, "_comptype"
 
     families = sorted({str(row["_family"]) for row in rows})
     for family in families:
@@ -1067,6 +1087,9 @@ def main() -> None:
         if not joined:
             print(f"[skip] {rep_label}: no matching rows")
             continue
+
+        for row in joined:   # computation-type label, derived from the model code, not traffic
+            row["_comptype"] = computation_type(row.get("_architecture", ""), row.get("_variant", ""))
 
         representation_inventory.append(
             {

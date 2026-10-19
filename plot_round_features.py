@@ -234,6 +234,51 @@ def fig7(adir, out):
     save(fig, out, "fig7_confusion_nested")
 
 
+
+
+def fig_comptype(adir, out):
+    f = os.path.join(adir, "family_nested_predictions.csv")
+    if not os.path.exists(f):
+        return
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(4.4, 3.8))
+    p = pd.read_csv(f)
+    nice = {"convolutional": "Convolutional", "recurrent": "Recurrent", "attention": "Attention", "dense": "Dense"}
+    global FAMILY_LABEL
+    saved = FAMILY_LABEL
+    FAMILY_LABEL = {k: nice.get(k, k) for k in set(p["family"]) | set(p["pred"])}
+    confusion_panel(ax, p, "Computation type (chance 25%)")
+    ax.set_ylabel("True type (experiments)")
+    FAMILY_LABEL = saved
+    fig.tight_layout()
+    save(fig, out, "fig8_confusion_comptype")
+
+
+def fig_timing(adir, out):
+    f = os.path.join(adir, "timing_by_device.csv")
+    if not os.path.exists(f):
+        return
+    import matplotlib.pyplot as plt
+    d = pd.read_csv(f)
+    d = d[d["horizon"] == "compute_gap"].copy()
+    order = ["dell_laptop", "dell_desktop", "jetson_orin_nano", "jetson_agx_orin"]
+    d["device"] = pd.Categorical(d["device"], [o for o in order if o in set(d["device"])], ordered=True)
+    d = d.sort_values("device")
+    fig, ax = plt.subplots(figsize=(6.4, 3.0))
+    y = np.arange(len(d))[::-1]
+    ax.barh(y, d["median_err_ms"], height=0.6, color=SEQ_BLUE[4], zorder=3)
+    ax.barh(y, d["p90_err_ms"], height=0.6, color=SEQ_BLUE[2], zorder=2)
+    for yi, (me, p9, w1) in zip(y, zip(d["median_err_ms"], d["p90_err_ms"], d["within_100ms"])):
+        ax.text(me + max(d["p90_err_ms"]) * 0.01, yi, f"median {me:.0f} ms   {w1:.0%} within 100 ms",
+                va="center", fontsize=8, color=INK)
+    ax.set_yticks(y, [x.replace("_", " ") for x in d["device"]])
+    ax.set_xlabel("Upload-start forecast error (ms); dark = median, light = p90")
+    ax.grid(axis="y", visible=False)
+    ax.set_title("Upload-start forecast error, best causal predictor", loc="left")
+    fig.tight_layout()
+    save(fig, out, "fig9_timing_by_device")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--analysis-dir", default="round_features/analysis")
@@ -250,6 +295,8 @@ def main():
     fig5(a.analysis_dir, out, res)
     fig6(a.analysis_dir, out)
     fig7(a.analysis_dir, out)
+    fig_comptype("round_features/analysis_comptype", out)
+    fig_timing("round_features/analysis_timing", out)
 
 
 if __name__ == "__main__":
