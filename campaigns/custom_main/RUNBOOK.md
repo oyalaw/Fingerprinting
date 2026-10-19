@@ -18,9 +18,10 @@ pcap chunks to the DGX, extract them there in parallel, and check the run before
 starting the next one:
 
 ```bash
-rsync -av --progress <user>@<proxy-host>:<repo>/experiments/staging/<run_id>/proxy/pcap/ \
-      /data/pcaps/<run_id>/
-python3 extract_pcaps_parallel.py collected_experiments/<run_id> --pcap-dir /data/pcaps/<run_id>
+# on the proxy laptop, in its repository: push the chunks to the DGX (the DGX runs SSH)
+rsync -avP experiments/staging/<run_id>/proxy/pcap/ dgx-1@10.42.0.195:/home/dgx-1/pcaps/<run_id>/
+# on the DGX
+python3 extract_pcaps_parallel.py collected_experiments/<run_id> --pcap-dir /home/dgx-1/pcaps/<run_id>
 python3 check_run.py collected_experiments/<run_id> --plan campaigns/custom_main/schedule.csv
 ```
 

@@ -16,11 +16,10 @@ read from the collected proxy summary (discovered_client_connections), so trace_
 recovered from the TCP SYNs to the proxy port in the pcaps, in order of first appearance.
 
 Usage
-  # 1. copy the pcap chunks from the proxy laptop (pcaps are never part of result collection)
-  rsync -av --progress <user>@<proxy-host>:<repo>/experiments/staging/<run_id>/proxy/pcap/ \\
-        /data/pcaps/<run_id>/
-  # 2. extract in parallel into the collected run
-  python3 extract_pcaps_parallel.py collected_experiments/<run_id> --pcap-dir /data/pcaps/<run_id>
+  # 1. on the proxy laptop, push the pcap chunks to the DGX (pcaps are never part of result collection)
+  rsync -avP experiments/staging/<run_id>/proxy/pcap/ dgx-1@10.42.0.195:/home/dgx-1/pcaps/<run_id>/
+  # 2. on the DGX, extract in parallel into the collected run
+  python3 extract_pcaps_parallel.py collected_experiments/<run_id> --pcap-dir /home/dgx-1/pcaps/<run_id>
   # 3. verify
   python3 check_run.py collected_experiments/<run_id>
 """
