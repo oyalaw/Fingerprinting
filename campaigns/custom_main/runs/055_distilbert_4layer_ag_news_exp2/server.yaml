@@ -1,12 +1,12 @@
 experiment:
   experiment_id: exp2
-  output_dir: experiments/results/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp2/server
-  results_root: experiments/results
+  output_dir: experiments/results_custom/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp2/server
+  results_root: experiments/results_custom
   existing_output_policy: error
   run_id: null
   experiment_number: 2
-  branch_dir: experiments/results/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch
-  run_dir: experiments/results/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp2
+  branch_dir: experiments/results_custom/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch
+  run_dir: experiments/results_custom/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp2
   storage_locator: transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp2
   layout_version: '1.0'
 node:
@@ -89,7 +89,7 @@ federated:
   policy_id: null
   fl_framework: custom_fedavg_tcp
 device:
-  label: jetson_agx_orin
+  label: nvidia_dgx_spark
   operating_system: ubuntu
 masked_language_modeling:
   mask_probability: 0.15
@@ -134,6 +134,6 @@ result_collection:
 campaign:
   order: 55
   repeat: 2
-  planned_device: jetson_agx_orin
+  planned_device: nvidia_dgx_spark
   plan: campaigns/custom_main/plan.json
   require_clock_sync: false

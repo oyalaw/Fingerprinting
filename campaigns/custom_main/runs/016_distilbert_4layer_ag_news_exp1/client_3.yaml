@@ -1,12 +1,12 @@
 experiment:
   experiment_id: exp1
-  output_dir: experiments/results/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp1/client_3
-  results_root: experiments/results
+  output_dir: experiments/results_custom/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp1/client_3
+  results_root: experiments/results_custom
   existing_output_policy: error
   run_id: null
   experiment_number: 1
-  branch_dir: experiments/results/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch
-  run_dir: experiments/results/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp1
+  branch_dir: experiments/results_custom/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch
+  run_dir: experiments/results_custom/transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp1
   storage_locator: transformer/distilbert/distilbert_4layer/text_classification/ag_news/pytorch/exp1
   layout_version: '1.0'
 node:

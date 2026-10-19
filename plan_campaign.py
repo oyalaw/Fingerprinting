@@ -183,6 +183,9 @@ def main():
                     help="override a role's device label from the reference run, e.g. server=nvidia_dgx_spark")
     ap.add_argument("--require-clock-sync", action="store_true",
                     help="roles refuse to start if the system clock is not synchronized")
+    ap.add_argument("--fresh-numbering", action="store_true",
+                    help="number every variant from exp1 (use with a new --results-root) instead of "
+                         "continuing after the experiment numbers already collected")
     ap.add_argument("--hosts", nargs="*", default=[], metavar="ROLE=HOSTNAME",
                     help="expected hostname per role, e.g. client_1=jetson-nano; roles refuse to start elsewhere")
     a = ap.parse_args()
@@ -206,6 +209,8 @@ def main():
     if ref is None:
         sys.exit(f"reference run {a.reference_run} not found under {a.collected}")
     templates = {r: load_yaml(ref / r / "config.yaml") for r in ROLES}
+    # the reference run predates the DGX becoming the server
+    templates["server"]["device"]["label"] = "nvidia_dgx_spark"
     for item in a.device:
         role, label = item.split("=", 1)
         templates[role]["device"]["label"] = label
@@ -241,7 +246,7 @@ def main():
         order += [(rep, c) for c in block]
 
     minutes = round_minutes(a.collected)
-    used = used_experiment_numbers(servers)
+    used = {} if a.fresh_numbering else used_experiment_numbers(servers)
     next_num = {}
     rows = []
     (out / "runs").mkdir(parents=True)

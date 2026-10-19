@@ -10,7 +10,7 @@
   "reference_run": "run_20260907t220204z_e367861f",
   "devices": {
     "server": {
-      "label": "jetson_agx_orin",
+      "label": "nvidia_dgx_spark",
       "operating_system": "ubuntu"
     },
     "client_1": {
