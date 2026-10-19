@@ -416,6 +416,15 @@ def interactive_configure(
 
     config["node"]["role"] = role
 
+    # the FL framework decides which client and server program runs, so the server and every
+    # client must pick the same one, before the model questions
+    if task == "training" and deployment == "federated":
+        config["federated"]["fl_framework"] = _choose_fl_framework()
+        if config["federated"]["fl_framework"] == "nvidia_flare":
+            config["federated"].setdefault("flare", {})["kits_dir"] = ask_text(
+                "FLARE startup kits folder (from main.py flare-provision)", "flare_kits/aifp/prod_00"
+            ).strip()
+
     framework = choose("Select framework", registry.frameworks())
     config["ai"]["framework"] = framework
 
@@ -697,7 +706,6 @@ def interactive_configure(
                 20,
             )
         elif role == "server":
-            config["federated"]["fl_framework"] = _choose_fl_framework()
             config["execution"]["learning_rate"] = float(
                 ask_text("Learning rate", "0.001")
             )
